@@ -1,0 +1,7 @@
+models/checkpoints/*
+datasets/data/*
+__pycache__/
+output/
+
+.venv/
+.conda/
