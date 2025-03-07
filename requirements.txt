@@ -17,7 +17,7 @@ thop  # FLOPs computation
 yacs
 natsort
 # app.py requirements
-Flask==2.0.3
+flask>=2.2.5
 requests==2.26.0
-Werkzeug==2.0.3
+Werkzeug>=3.0.6
 Jinja2==3.1.3
