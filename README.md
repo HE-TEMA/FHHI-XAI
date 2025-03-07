@@ -27,35 +27,3 @@ Path for data is `datasets/data`.
 
 
 
-
-
-
-
-### Suggested repo structure:
-
-```
-L-CRP-TEMA/
-│── datasets/
-│   ├── data/                  # Store raw and preprocessed datasets, added to gitignore
-│   │   ├── General_Flood_v3/  
-│   │   ├── PersonCarDetectionData/
-│   ├── flood_dataset.py      # Script for loading flood dataset
-│
-│── experiments/               # Stores experiment configurations & logs
-│
-│── examples/                  # Stores example notebooks
-│   ├── unet_example/  
-│
-│── models/                    # Store model architectures & checkpoints
-│   ├── checkpoints/           # Stores trained models' weights, added to gitignore
-│   │   ├── unet_flood.pt      # Checkpoint for flood detection model
-│
-│── scripts/                   
-│
-│── utils/                     
-│
-│── config.yaml                # Global configuration file
-│── requirements.txt           # Dependencies
-│── README.md                  # Project documentation
-│── .gitignore                 # Ignore unnecessary files
-```
