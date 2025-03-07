@@ -1,7 +1,5 @@
 import os
 import sys
-# This is needed for imports inside the LCRP submodule to work correctly
-sys.path.append(os.path.join(os.path.dirname(__file__), 'LCRP'))
 
 from crp.concepts import ChannelConcept
 from crp.helper import get_layer_names

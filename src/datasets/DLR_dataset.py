@@ -8,7 +8,7 @@ from natsort import natsorted
 
 import sys
 sys.path.append("..")
-from utils_DLR import tile_array
+from src.utils_DLR import tile_array
 
 class DatasetDLR(Dataset):
     class_names = ["flood"]
