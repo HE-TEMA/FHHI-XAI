@@ -39,6 +39,18 @@ def post_data():
     try: 
         app.logger.debug('POST request received.') 
         data = request.get_json() 
+
+        entity_type = data.get('entity_type')
+
+        if entity_type is None:
+            return jsonify({'error': 'Entity type not provided.'}), 400
+        
+        VALID_ENTITY_TYPES = ["BurntSegmentation", "FireSegmentation", "FloodSegmentation", "PersonVehicleDetection", "SmokeSegmentation"]
+        if entity_type not in VALID_ENTITY_TYPES:
+            return jsonify({'error': f'Invalid entity type: {entity_type}.'}), 400
+
+        
+
         if 'name' in data: 
             message = f"Hello, {data['name']}!"
             return jsonify({'message': message}) 
