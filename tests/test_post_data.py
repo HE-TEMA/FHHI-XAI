@@ -20,11 +20,15 @@ if __name__ == "__main__":
         entity_data = json.load(f)
 
     hostname = "http://localhost"
-    port = 14
+    port = 4000
     endpoint = "explanation/post_data"
     url = f"{hostname}:{port}/{endpoint}"
 
     response = requests.post(url, json=entity_data)
 
-    print(response.json())
+    try:
+        print(response.json())
+    except:
+        print(f"Failed to get response as a json")
+        print(response.text)
 

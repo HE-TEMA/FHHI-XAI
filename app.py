@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify, render_template, g
 import requests
 import os
 import logging
+import numpy as np
+from PIL import Image
 
 from src.minio_client import MinIOClient, MINIO_BUCKET
 
@@ -52,7 +54,10 @@ def post_data():
         app.logger.debug('POST request received.') 
         data = request.get_json() 
 
-        entity_type = data.get('entity_type')
+        # AUTH entities are a list of one element
+        data = data[0]
+
+        entity_type = data.get('type')
 
         if entity_type is None:
             return jsonify({'error': 'Entity type not provided.'}), 400
@@ -61,7 +66,20 @@ def post_data():
         if entity_type not in VALID_ENTITY_TYPES:
             return jsonify({'error': f'Invalid entity type: {entity_type}.'}), 400
 
+        # Load the input image from MinIO
+        filename = data["parameters"]["value"]["FileName"]
 
+        minio_filename = f"{filename}"
+
+        minio_client = get_minio_client()
+
+        img = minio_client.download_image(MINIO_BUCKET, minio_filename)
+        if img is None:
+            return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
+
+        print(np.asarray(Image.fromarray(img)).shape)
+        img = Image.fromarray(img)
+        img.show()
         
 
         if 'name' in data: 
