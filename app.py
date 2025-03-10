@@ -1,7 +1,9 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, g
 import requests
 import os
 import logging
+
+from src.minio_client import MinIOClient, MINIO_BUCKET
 
 app = Flask(__name__, template_folder='./')
 
@@ -11,16 +13,25 @@ logging.basicConfig(level=logging.DEBUG)
 # Get base path from environment variable
 BASE_PATH = os.environ.get('BASE_PATH', '/')
 
+
+def get_minio_client():
+    if 'minio_client' not in g:
+        g.minio_client = MinIOClient()
+    return g.minio_client
+
+
 # Route for the index page
 @app.route(f'{BASE_PATH}')
 def index():
     return render_template('index.html', message='Welcome! This demonstration container illustrates how to integrate services. Feel free to explore and experiment.')
+
 
 # Route for the ping endpoint
 @app.route(f'{BASE_PATH}/ping')
 def ping(): 
     app.logger.debug('Ping endpoint called.')
     return jsonify({'status': 'ok'})
+
 
 # Route for the GET request
 @app.route(f'{BASE_PATH}/get_data', methods=['GET'])
@@ -32,6 +43,7 @@ def get_data():
     except Exception as e:  
         app.logger.error(f'Error in GET request: {str(e)}')  
         return jsonify({'error': str(e)}), 500
+
 
 # Route for the POST request
 @app.route(f'{BASE_PATH}/post_data', methods=['POST']) 
@@ -49,6 +61,7 @@ def post_data():
         if entity_type not in VALID_ENTITY_TYPES:
             return jsonify({'error': f'Invalid entity type: {entity_type}.'}), 400
 
+
         
 
         if 'name' in data: 
@@ -58,6 +71,7 @@ def post_data():
     except Exception as e:
         app.logger.error(f'Error in POST request: {str(e)}') 
         return jsonify({'error': str(e)}), 500
+
 
 # Endpoint to send data to the Context Broker
 @app.route(f'{BASE_PATH}/send_to_context_broker', methods=['POST']) 
