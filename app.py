@@ -5,6 +5,7 @@ import logging
 import numpy as np
 from PIL import Image
 
+from src.explanator import Explanator
 from src.minio_client import MinIOClient, MINIO_BUCKET
 
 app = Flask(__name__, template_folder='./')
@@ -20,6 +21,12 @@ def get_minio_client():
     if 'minio_client' not in g:
         g.minio_client = MinIOClient()
     return g.minio_client
+
+
+def get_explanator():
+    if 'explanator' not in g:
+        g.explanator = Explanator()
+    return g.explanator
 
 
 # Route for the index page
@@ -62,7 +69,10 @@ def post_data():
         if entity_type is None:
             return jsonify({'error': 'Entity type not provided.'}), 400
         
-        VALID_ENTITY_TYPES = ["BurntSegmentation", "FireSegmentation", "FloodSegmentation", "PersonVehicleDetection", "SmokeSegmentation"]
+        explanator = get_explanator()
+
+        valid_entity_types = explanator.entity_
+       
         if entity_type not in VALID_ENTITY_TYPES:
             return jsonify({'error': f'Invalid entity type: {entity_type}.'}), 400
 
@@ -77,9 +87,27 @@ def post_data():
         if img is None:
             return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
 
+
+        explanation_entity, explanation_image = explanator.explain(entity_type, img)
+        
+        # Upload the image to MinIO
+        # explanation_image_filename = f"EXPLANATION/{entity_type}/{filename}"
+        # minio_client.upload_image(MINIO_BUCKET, explanation_image_filename, explanation_image)
+
+        # Send the explanation entity to the Context Broker
+        # entity_id = # TODO: Implement this
+        # entity_type = # TODO: Implement this
+        # create_entity_response = create_entity(entity_id, entity_type, explanation_entity)
+
+        print(np.asarray(Image.fromarray(explanation_image)).shape)
+        explanation_image = Image.fromarray(explanation_image)
+        explanation_image.show()
+
         print(np.asarray(Image.fromarray(img)).shape)
         img = Image.fromarray(img)
         img.show()
+
+        return jsonify({'message': 'Explanation successful', 'explanation_entity': explanation_entity}), 200
         
 
         if 'name' in data: 
@@ -138,6 +166,7 @@ def send_to_context_broker():
         return jsonify({'error': f'Error while sending data to Orion: {str(e)}'}), 500 
 
 def create_entity(entity_id, entity_type, value):
+    raise NotImplementedError("Implement this for our TFA02 entities")
     data_to_send = {
         "id": entity_id,
         "type": entity_type,

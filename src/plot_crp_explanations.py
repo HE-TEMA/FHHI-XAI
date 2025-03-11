@@ -19,6 +19,20 @@ from LCRP.utils.render import vis_opaque_img_border
 
 def plot_explanations(model_name, model, dataset, sample_id, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir):
     # This code is for results visualization, taken from L-CRP/experiments/plot_crp_explanation.py
+    img, t = dataset[sample_id]
+
+    # Get explanation visualization
+    fig = plot_one_image_explanation(model_name, model, img, dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir)
+    
+    # Display the figure
+    plt.figure(fig)
+    plt.show()
+    print("Done plotting.")
+
+
+
+
+def plot_one_image_explanation(model_name, model, img, dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
     model.eval()
@@ -27,7 +41,7 @@ def plot_explanations(model_name, model, dataset, sample_id, class_id, layer, pr
     composite = COMPOSITES[model_name](canonizers=[CANONIZERS[model_name]()])
     condition = [{"y": class_id}]
 
-    img, t = dataset[sample_id]
+
     img = img[None, ...].to(device)
     ratio = img.shape[-2] / img.shape[-1]
 
@@ -148,6 +162,27 @@ def plot_explanations(model_name, model, dataset, sample_id, class_id, layer, pr
             ax.set_xticks([])
             ax.set_yticks([])
     plt.tight_layout()
-    print()
-    plt.show()
-    print("Done plotting.")
+
+    # Return the figure instead of showing it
+    return fig
+
+
+# Add a new helper function to convert the figure to an array if needed
+def fig_to_array(fig):
+    """
+    Convert a matplotlib figure to a numpy array.
+    
+    Args:
+        fig: matplotlib figure
+        
+    Returns:
+        numpy array of the figure
+    """
+    # Draw the figure to a canvas
+    fig.canvas.draw()
+    
+    # Convert canvas to numpy array
+    data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    
+    return data
