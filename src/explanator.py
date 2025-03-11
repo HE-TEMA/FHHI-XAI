@@ -2,6 +2,9 @@ import os
 import torch
 import torchvision.transforms as transforms
 import numpy as np
+# Set non-interactive backend for matplotlib to avoid GUI issues in Flask
+import matplotlib
+matplotlib.use('Agg')
 
 from LCRP.models import get_model 
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
@@ -102,8 +105,9 @@ class Explanator:
 
         glocal_analysis_output_dir = "output/crp/yolo_person_car"
 
-        # turn image into tensor
-        image_tensor = torch.tensor(image, dtype=self.dtype)
+        
+        # Apply transform as with the reference images
+        image_tensor = self.person_car_dataset.transform(image)
 
 
         explanation_fig = plot_one_image_explanation(model_name, self.person_vehicle_model, image_tensor, self.person_car_dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir)
