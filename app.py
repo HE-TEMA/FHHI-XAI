@@ -8,6 +8,8 @@ from PIL import Image
 from src.explanator import Explanator
 from src.minio_client import MinIOClient, MINIO_BUCKET
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
+
 app = Flask(__name__, template_folder='./')
 
 # Configure logging, set logging level to DEBUG
@@ -25,7 +27,7 @@ def get_minio_client():
 
 def get_explanator():
     if 'explanator' not in g:
-        g.explanator = Explanator()
+        g.explanator = Explanator(project_root=PROJECT_ROOT)
     return g.explanator
 
 
@@ -71,9 +73,7 @@ def post_data():
         
         explanator = get_explanator()
 
-        valid_entity_types = explanator.entity_
-       
-        if entity_type not in VALID_ENTITY_TYPES:
+        if entity_type not in explanator.VALID_ENTITY_TYPES:
             return jsonify({'error': f'Invalid entity type: {entity_type}.'}), 400
 
         # Load the input image from MinIO

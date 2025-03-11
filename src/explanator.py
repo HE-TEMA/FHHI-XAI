@@ -4,7 +4,7 @@ import torchvision.transforms as transforms
 import numpy as np
 
 from LCRP.models import get_model 
-from src.plot_crp_explanations import plot_explanations
+from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.datasets.person_car_dataset import PersonCarDataset
 
 
@@ -73,7 +73,7 @@ class Explanator:
     def load_person_vehicle_model(self):
         # Load the person/vehicle detection model
         model_name = "yolov6s6"
-        person_vehicle_model_path = os.path.join(self.project_root, "models" , "best_v6s6.pt")
+        person_vehicle_model_path = os.path.join(self.project_root, "models" , "best_v6s6_ckpt.pt")
         return get_model(model_name=model_name, classes=2, ckpt_path=person_vehicle_model_path, device=self.device, dtype=self.dtype)
 
     def load_person_car_data(self):
@@ -94,7 +94,6 @@ class Explanator:
 
         # Setting up main parameters
         class_id = 1
-        sample_id = 11
         n_concepts = 3
         n_refimgs = 12
         layer = "module.backbone.ERBlock_6.2.cspsppf.cv7.block.conv"
@@ -106,9 +105,11 @@ class Explanator:
         # turn image into tensor
         image_tensor = torch.tensor(image, dtype=self.dtype)
 
-        plot_explanations(model_name, self.person_vehicle_model, image_tensor, self.person_car_dataset, sample_id, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir)
-        # def plot_one_image_explanation(model_name, model, img, dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir):
-        return 
+
+        explanation_fig = plot_one_image_explanation(model_name, self.person_vehicle_model, image_tensor, self.person_car_dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir)
+        explanation_img = fig_to_array(explanation_fig)
+        return {"entity": "TO BE IMPLEMENTED"}, explanation_img
+
     
     
 
