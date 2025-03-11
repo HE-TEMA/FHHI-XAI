@@ -15,6 +15,10 @@ app = Flask(__name__, template_folder='./')
 # Configure logging, set logging level to DEBUG
 logging.basicConfig(level=logging.DEBUG)
 
+# Configure logging to silence specific libraries
+logging.getLogger('PIL').setLevel(logging.INFO)
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+
 # Get base path from environment variable
 BASE_PATH = os.environ.get('BASE_PATH', '/')
 
@@ -91,8 +95,8 @@ def post_data():
         explanation_entity, explanation_image = explanator.explain(entity_type, img)
         
         # Upload the image to MinIO
-        # explanation_image_filename = f"EXPLANATION/{entity_type}/{filename}"
-        # minio_client.upload_image(MINIO_BUCKET, explanation_image_filename, explanation_image)
+        explanation_image_filename = f"EXPLANATION/{entity_type}/{filename}"
+        minio_client.upload_image(MINIO_BUCKET, explanation_image_filename, explanation_image)
 
         # Send the explanation entity to the Context Broker
         # entity_id = # TODO: Implement this

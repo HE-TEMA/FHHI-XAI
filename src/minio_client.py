@@ -64,4 +64,54 @@ class MinIOClient:
         except S3Error as exc:
             print("Error occurred.", exc)
             
+        
+    def upload_image(self, bucket_name, object_name, image: np.ndarray):
+        """
+        Upload a numpy array image to MinIO.
+    
+        Args:
+            bucket_name (str): Name of the bucket
+            object_name (str): Name of the object to create in MinIO
+            image (np.ndarray): Numpy array representation of the image
+        """
+        try:
+            # Create bucket if it doesn't exist
+            if not self.client.bucket_exists(bucket_name):
+                self.client.make_bucket(bucket_name)
+                print("Bucket created successfully.")
             
+            # Remove leading slash from object_name
+            if object_name.startswith("/"):
+                object_name = object_name[1:]
+            
+            # Convert numpy array to PIL Image
+            img = Image.fromarray(image)
+            
+            # Create a bytes buffer
+            buffer = io.BytesIO()
+            
+            # Save image to the buffer in PNG format
+            img.save(buffer, format='PNG')
+            
+            # Reset buffer position to start
+            buffer.seek(0)
+            
+            # Get buffer size
+            size = buffer.getbuffer().nbytes
+            
+            # Upload the image buffer to MinIO
+            results = self.client.put_object(
+                bucket_name,
+                object_name,
+                buffer,
+                size,
+                content_type='image/png'
+            )
+            
+            print(f"Image '{results.object_name}' uploaded successfully.")
+            print(f"Etag: {results.etag}")
+            
+        except S3Error as exc:
+            print("Error occurred.", exc)
+        except Exception as ex:
+            print(f"Unexpected error occurred: {ex}") 
