@@ -24,10 +24,10 @@ WORKDIR /app
 # The port on which the application will listen for incoming connections
 ENV PORT=8080
 # The basepath environment variable
-ENV BASE_PATH='/your_path'
+ENV BASE_PATH='/explanation'
 
 # The URL of the message broker to connect to
-ENV BROKER_URL=message_broker.example.com
+ENV BROKER_URL=https://orion.tema.digital-enabler.eng.it
 # The ID of the topic to subscribe to or publish messages to
 ENV BROKER_ENTITY_ID=topic123
 # The type of the entity (topic or queue) to interact with
@@ -50,6 +50,9 @@ ENV PROCESSING_UNIT=gpu
 # Install the dependencies specified in requirements.txt
 # This command installs all Python packages listed in the requirements.txt file
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Dependencies for CV2
+RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
 
 
 # Run the application when the container starts

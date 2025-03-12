@@ -28,9 +28,6 @@ if __name__ == "__main__":
 
     response = requests.post(url, json=entity_data)
 
-    try:
-        print(response.json())
-    except:
-        print(f"Failed to get response as a json")
-        print(response.text)
+    print(f"Response status code: {response.status_code}")
+    print(response.text)
 

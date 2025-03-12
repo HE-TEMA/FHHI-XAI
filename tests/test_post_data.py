@@ -20,7 +20,7 @@ if __name__ == "__main__":
         entity_data = json.load(f)
 
     hostname = "http://localhost"
-    port = 4000
+    port = 14
     endpoint = "explanation/post_data"
     url = f"{hostname}:{port}/{endpoint}"
 

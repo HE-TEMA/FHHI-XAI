@@ -13,7 +13,6 @@ addict>=2.4.0
 thop  # FLOPs computation
 yacs
 natsort
-git+https://github.com/meituan/YOLOv6.git
 # app.py requirements
 flask>=2.2.5
 requests==2.26.0
