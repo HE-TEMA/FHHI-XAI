@@ -3,6 +3,7 @@ import requests
 import os
 import logging
 import numpy as np
+import traceback
 from PIL import Image
 
 from src.explanator import Explanator
@@ -91,6 +92,7 @@ def post_data():
         if img is None:
             return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
 
+
         explanation_entity, explanation_image = explanator.explain(entity_type, entity, img)
         
         app.logger.info("Uploading explanation image to MinIO")
@@ -127,7 +129,6 @@ def post_data():
         
     except Exception as e:
         app.logger.error(f'Unexpected error: {str(e)}')
-        import traceback
         app.logger.error(traceback.format_exc())
         return jsonify({'error': f'Unexpected error: {str(e)}, traceback: {traceback.format_exc()}'}), 500
 
@@ -153,7 +154,8 @@ def delete_entity():
             return jsonify({'error': 'Entity ID not provided.'}), 400
             
         # Construct the delete URL
-        delete_entity_url = f"{os.environ.get('BROKER_URL')}/ngsi-ld/v1/entities/{entity_id}"
+        broker_url = os.environ.get('BROKER_URL', 'https://orion.tema.digital-enabler.eng.it')
+        delete_entity_url = f"{broker_url}/ngsi-ld/v1/entities/{entity_id}"
         
         # Send the delete request to the Orion Context Broker
         app.logger.debug(f'Sending DELETE request to: {delete_entity_url}')
@@ -179,11 +181,84 @@ def delete_entity():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route(f'{BASE_PATH}/subscribe_to_context_broker', methods=['POST'])
+def subscribe_to_context_broker():
+    try:
+        app.logger.debug('POST request to subscribe to context broker received.')
+        
+        # Delete existing subscription if it exists
+        subscription_id = "urn:ngsi-ld:fhhi:one_subscription_to_rule_them_all"
+
+        broker_url = os.environ.get('BROKER_URL', 'https://orion.tema.digital-enabler.eng.it')
+        delete_url = f"{broker_url}/ngsi-ld/v1/subscriptions/{subscription_id}"
+        
+        app.logger.debug(f'Attempting to delete existing subscription: {delete_url}')
+        delete_response = requests.delete(delete_url)
+        app.logger.debug(f'Delete subscription response: {delete_response.status_code}')
+        
+        # Get the notification endpoint
+        host = request.host_url.rstrip('/')
+        post_data_url = f"{host}{BASE_PATH}/post_data"
+        app.logger.info(f'POST_DATA_URL: {post_data_url}')
+        
+        # Create subscription payload
+        subscription_payload = {
+            "id": subscription_id,
+            "type": "Subscription",
+            "name": "TFA02 inputs subscription",
+            "description": "Subscription description",
+            "entities": [
+                {"type": "BurntSegmentation"},
+                {"type": "FireSegmentation"},
+                {"type": "FloodSegmentation"},
+                {"type": "PersonVehicleDetection"},
+                {"type": "SmokeSegmentation"}
+            ],
+            "notification": {
+                "endpoint": {
+                    "uri": post_data_url,
+                    "accept": "application/json"
+                }
+            }
+        }
+        
+        # Create new subscription
+        subscription_url = f"{broker_url}/ngsi-ld/v1/subscriptions"
+        app.logger.debug(f'Creating subscription at: {subscription_url}')
+        
+        create_response = requests.post(
+            subscription_url,
+            headers={'Content-Type': 'application/json'},
+            json=subscription_payload
+        )
+        
+        status_map = {
+            201: {'message': 'Subscription created successfully.'},
+            204: {'message': 'Subscription updated successfully.'},
+            400: {'error': 'Bad request to Orion Context Broker.'},
+            401: {'error': 'Unauthorized request to Orion Context Broker.'},
+            403: {'error': 'Forbidden request to Orion Context Broker.'},
+            422: {'error': 'Unprocessable Entity - Invalid subscription payload.'},
+            'default': {'error': f'Unexpected response from Orion Context Broker: {create_response.status_code}'}
+        }
+        
+        response_info = status_map.get(create_response.status_code, status_map['default'])
+        app.logger.info(f'Subscription response: {create_response.status_code} - {response_info}')
+        
+        if create_response.status_code in [201, 204]:
+            return jsonify(response_info), create_response.status_code
+        else:
+            return jsonify(response_info), create_response.status_code
+
+    except Exception as e:
+        app.logger.error(f'Error in subscribe to context broker request: {str(e)}')
+        app.logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
 
 # Endpoint to send data to the Context Broker
 @app.route(f'{BASE_PATH}/send_to_context_broker', methods=['POST']) 
 def send_to_context_broker(): 
-    # raise NotImplementedError("Implement this for our TFA02 entities")
+    raise NotImplementedError("Implement this for our TFA02 entities")
 
     try:
         app.logger.debug('POST request to send data to context broker received.') 
@@ -229,7 +304,7 @@ def send_to_context_broker():
         return jsonify({'error': f'Error while sending data to Orion: {str(e)}'}), 500 
 
 def create_entity(entity_id, entity_type, value):
-    # raise NotImplementedError("Implement this for our TFA02 entities")
+    raise NotImplementedError("Implement this for our TFA02 entities")
     data_to_send = {
         "id": entity_id,
         "type": entity_type,
