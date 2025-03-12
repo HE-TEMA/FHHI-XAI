@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 
 from src.explanator import Explanator
-from src.minio_client import MinIOClient, MINIO_BUCKET
+from src.minio_client import MinIOClient, FHHI_MINIO_BUCKET, NAPLES_MINIO_BUCKET
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
 
@@ -65,12 +65,12 @@ def get_data():
 def post_data():
     try: 
         app.logger.debug('POST request received.') 
-        data = request.get_json() 
+        raw_data = request.get_json() 
 
         # AUTH entities are a list of one element
-        data = data[0]
+        entity = raw_data[0]
 
-        entity_type = data.get('type')
+        entity_type = entity.get('type')
 
         if entity_type is None:
             return jsonify({'error': 'Entity type not provided.'}), 400
@@ -81,27 +81,39 @@ def post_data():
             return jsonify({'error': f'Invalid entity type: {entity_type}.'}), 400
 
         # Load the input image from MinIO
-        filename = data["parameters"]["value"]["FileName"]
+        filename = entity["parameters"]["value"]["FileName"]
 
         minio_filename = f"{filename}"
 
         minio_client = get_minio_client()
 
-        img = minio_client.download_image(MINIO_BUCKET, minio_filename)
+        img = minio_client.download_image(NAPLES_MINIO_BUCKET, minio_filename)
         if img is None:
             return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
 
-
-        explanation_entity, explanation_image = explanator.explain(entity_type, img)
+        explanation_entity, explanation_image = explanator.explain(entity_type, entity, img)
         
-        # Upload the image to MinIO
-        explanation_image_filename = f"EXPLANATION/{entity_type}/{filename}"
-        minio_client.upload_image(MINIO_BUCKET, explanation_image_filename, explanation_image)
+        app.logger.info("Uploading explanation image to MinIO")
+        explanation_image_filename = explanation_entity[0]["explanation_image"]["value"]["filename"]
+        minio_client.upload_image(FHHI_MINIO_BUCKET, explanation_image_filename, explanation_image)
 
-        # Send the explanation entity to the Context Broker
-        # entity_id = # TODO: Implement this
-        # entity_type = # TODO: Implement this
-        # create_entity_response = create_entity(entity_id, entity_type, explanation_entity)
+        app.logger.info("Sending explanation entity to Orion")
+        orion_response = update_entity(explanation_entity)
+
+        status_map = {
+            204: {'json_response': {'message': 'Entity successfully updated on Orion.'}},
+            400: {'json_response': {'error': 'Bad request to Orion'}},
+            401: {'json_response': {'error': 'Unauthorized request to Orion'}},
+            404: {'json_response': {'error': 'Entity not found on Orion'}},
+            'default': {'json_response': {'error': 'Unexpected response from Orion'}}
+        }
+
+        status_info = status_map.get(orion_response.status_code, status_map['default'])
+        orion_json_response = status_info['json_response']
+
+        if orion_response.status_code != 204:
+            return jsonify(orion_json_response), orion_response.status_code 
+
 
         print(np.asarray(Image.fromarray(explanation_image)).shape)
         explanation_image = Image.fromarray(explanation_image)
@@ -111,21 +123,68 @@ def post_data():
         img = Image.fromarray(img)
         img.show()
 
-        return jsonify({'message': 'Explanation successful', 'explanation_entity': explanation_entity}), 200
+        return jsonify({'message': 'Explanation successful', 'explanation_entity': explanation_entity, 'orion_response': orion_json_response}), 200
         
-
-        if 'name' in data: 
-            message = f"Hello, {data['name']}!"
-            return jsonify({'message': message}) 
-        return jsonify({'message': data}) 
     except Exception as e:
-        app.logger.error(f'Error in POST request: {str(e)}') 
+        app.logger.error(f'Unexpected error: {str(e)}')
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({'error': f'Unexpected error: {str(e)}, traceback: {traceback.format_exc()}'}), 500
+
+
+
+def update_entity(entity_to_send):
+    update_entity_url = "https://orion.tema.digital-enabler.eng.it/ngsi-ld/v1/entityOperations/upsert"
+    response = requests.post(update_entity_url, json=entity_to_send)
+    return response
+
+
+@app.route(f'{BASE_PATH}/delete_entity', methods=['POST'])
+def delete_entity():
+    try:
+        app.logger.debug('POST request to delete entity received.')
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided in the request.'}), 400
+        
+        entity_id = data.get('entity_id')
+
+        if entity_id is None:
+            return jsonify({'error': 'Entity ID not provided.'}), 400
+            
+        # Construct the delete URL
+        delete_entity_url = f"{os.environ.get('BROKER_URL')}/ngsi-ld/v1/entities/{entity_id}"
+        
+        # Send the delete request to the Orion Context Broker
+        app.logger.debug(f'Sending DELETE request to: {delete_entity_url}')
+        response = requests.delete(delete_entity_url)
+        
+        status_map = {
+            204: {'log_message': 'Entity successfully deleted from Orion.', 'json_response': {'message': 'Entity successfully deleted.'}},
+            400: {'log_message': 'Bad request to Orion.', 'json_response': {'error': 'Bad request to Orion'}},
+            401: {'log_message': 'Unauthorized request to Orion.', 'json_response': {'error': 'Unauthorized request to Orion'}},
+            404: {'log_message': 'Entity not found on Orion.', 'json_response': {'error': 'Entity not found on Orion'}},
+            'default': {'log_message': 'Unexpected response from Orion.', 'json_response': {'error': 'Unexpected response from Orion'}}
+        }
+        
+        status_info = status_map.get(response.status_code, status_map['default'])
+        log_message = status_info['log_message']
+        json_response = status_info['json_response']
+        
+        app.logger.debug(f'{log_message} Status code: {response.status_code}')
+        return jsonify(json_response), response.status_code
+        
+    except Exception as e:
+        app.logger.error(f'Error in delete entity request: {str(e)}')
         return jsonify({'error': str(e)}), 500
+
 
 
 # Endpoint to send data to the Context Broker
 @app.route(f'{BASE_PATH}/send_to_context_broker', methods=['POST']) 
 def send_to_context_broker(): 
+    # raise NotImplementedError("Implement this for our TFA02 entities")
+
     try:
         app.logger.debug('POST request to send data to context broker received.') 
         data = request.get_json() 
@@ -170,7 +229,7 @@ def send_to_context_broker():
         return jsonify({'error': f'Error while sending data to Orion: {str(e)}'}), 500 
 
 def create_entity(entity_id, entity_type, value):
-    raise NotImplementedError("Implement this for our TFA02 entities")
+    # raise NotImplementedError("Implement this for our TFA02 entities")
     data_to_send = {
         "id": entity_id,
         "type": entity_type,

@@ -9,6 +9,8 @@ matplotlib.use('Agg')
 from LCRP.models import get_model 
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.datasets.person_car_dataset import PersonCarDataset
+from src.entities import get_person_vehicle_detection_explanation_entity
+from src.minio_client import FHHI_MINIO_BUCKET
 
 
 class Explanator:
@@ -38,7 +40,7 @@ class Explanator:
 
         self.VALID_ENTITY_TYPES = list(self.entity_handlers.keys())
     
-    def explain(self, entity_type: str, image):
+    def explain(self, entity_type: str, src_entity: dict, image: np.ndarray):
         """Generate explanation for the given entity type and image.
         
         Args:
@@ -56,21 +58,19 @@ class Explanator:
         handler = self.entity_handlers.get(entity_type)
         
         # Call the handler method with the image
-        return handler(image)
+        return handler(src_entity, image)
     
-    def explain_burnt_segmentation(self, image):
-        # Implementation for burnt segmentation explanation
-        pass
-    
-
-    def explain_fire_segmentation(self, image):
-        # Implementation for fire segmentation explanation
-        pass
+    def explain_burnt_segmentation(self, src_entity: dict, image: np.ndarray): 
+        raise NotImplementedError("Burnt segmentation explanation is not implemented yet.")
     
 
-    def explain_flood_segmentation(self, image):
-        # Implementation for flood segmentation explanation
-        pass
+    def explain_fire_segmentation(self, src_entity: dict, image: np.ndarray):
+        raise NotImplementedError("Fire segmentation explanation is not implemented yet.")
+    
+
+
+    def explain_flood_segmentation(self, src_entity: dict, image: np.ndarray):
+        raise NotImplementedError("Flood segmentation explanation is not implemented yet.")
     
 
     def load_person_vehicle_model(self):
@@ -90,7 +90,7 @@ class Explanator:
         dataset = PersonCarDataset(root_dir=person_car_data_path, split="train", transform=transform)
         return dataset
 
-    def explain_person_vehicle_detection(self, image: np.ndarray):
+    def explain_person_vehicle_detection(self, src_entity: dict, image: np.ndarray):
         # Implementation for person/vehicle detection explanation
 
         model_name = "yolov6s6"
@@ -112,11 +112,28 @@ class Explanator:
 
         explanation_fig = plot_one_image_explanation(model_name, self.person_vehicle_model, image_tensor, self.person_car_dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir)
         explanation_img = fig_to_array(explanation_fig)
-        return {"entity": "TO BE IMPLEMENTED"}, explanation_img
+
+        original_filename = src_entity["parameters"]["value"]["FileName"]
+        original_entity_type = src_entity["type"]
+
+        explanation_entity = get_person_vehicle_detection_explanation_entity(
+            original_image_bucket=src_entity["bucket"]["value"],
+            original_image_filename=original_filename,
+            original_detection_boxes=src_entity["detection"]["value"]["boxes"],
+            original_detection_class_categories=src_entity["detection"]["value"]["class_categories"],
+            explanation_image_bucket=FHHI_MINIO_BUCKET,
+            explanation_image_filename= f"tfa02/{original_entity_type}/{original_filename}",
+            class_id=class_id,
+            n_concepts=n_concepts,
+            n_refimgs=n_refimgs,
+            layer=layer,
+            mode=mode,
+            explained_box=prediction_num,
+        )
+
+        return explanation_entity, explanation_img
 
     
     
-
-    def explain_smoke_segmentation(self, image):
-        # Implementation for smoke segmentation explanation
-        pass
+    def explain_smoke_segmentation(self, src_entity: dict, image: np.ndarray):
+        raise NotImplementedError("Smoke segmentation explanation is not implemented yet.")

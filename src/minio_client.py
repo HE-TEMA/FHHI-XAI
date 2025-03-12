@@ -8,7 +8,8 @@ import io
 MINIO_ENDPOINT= 'storage.tema.digital-enabler.eng.it:443'
 MINIO_ACCESS_KEY = 'D4xMAQylbJML0ppbLMtt'     # Used in all examples
 MINIO_SECRET= 'rTV2pwa2PMApAzgV3tssGf7NKNVobM3MalAaSXpY'      # Used in all examples
-MINIO_BUCKET='naples'
+FHHI_MINIO_BUCKET='fhhi'
+NAPLES_MINIO_BUCKET='naples'
 
 class MinIOClient:
     def __init__(self, url=MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET, secure=True):
