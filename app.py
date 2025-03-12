@@ -88,11 +88,12 @@ def post_data():
 
         minio_client = get_minio_client()
 
+        app.logger.info("Downloading image from MinIO")
         img = minio_client.download_image(NAPLES_MINIO_BUCKET, minio_filename)
         if img is None:
             return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
 
-
+        app.logger.info("Explaining entity")
         explanation_entity, explanation_image = explanator.explain(entity_type, entity, img)
         
         app.logger.info("Uploading explanation image to MinIO")
