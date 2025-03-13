@@ -21,6 +21,8 @@ def plot_explanations(model_name, model, dataset, sample_id, class_id, layer, pr
     # This code is for results visualization, taken from L-CRP/experiments/plot_crp_explanation.py
     img, t = dataset[sample_id]
 
+    print(img.shape)
+
     # Get explanation visualization
     fig = plot_one_image_explanation(model_name, model, img, dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir)
     

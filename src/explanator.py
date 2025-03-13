@@ -9,7 +9,8 @@ matplotlib.use('Agg')
 from LCRP.models import get_model 
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.datasets.person_car_dataset import PersonCarDataset
-from src.entities import get_person_vehicle_detection_explanation_entity
+from src.datasets.flood_dataset import FloodDataset
+from src.entities import get_person_vehicle_detection_explanation_entity, get_flood_segmentation_explanation_entity
 from src.minio_client import FHHI_MINIO_BUCKET
 
 
@@ -70,7 +71,78 @@ class Explanator:
 
 
     def explain_flood_segmentation(self, src_entity: dict, image: np.ndarray):
-        raise NotImplementedError("Flood segmentation explanation is not implemented yet.")
+        """
+        Generate flood segmentation explanation using UNet model and CRP method.
+        
+        Args:
+            src_entity: Source entity with flood segmentation data
+            image: Input image as numpy array
+            
+        Returns:
+            Tuple of (explanation_entity, explanation_image)
+        """
+        # Load the flood segmentation model
+        model_name = "unet"
+        flood_model_path = os.path.join(self.project_root, "models", "unet_flood_modified.pt")
+        
+        # Load model if not already loaded
+        if not hasattr(self, "flood_model"):
+            self.flood_model = get_model(model_name=model_name, classes=2, ckpt_path=flood_model_path, device=self.device, dtype=self.dtype)
+        
+        # Load flood dataset if not already loaded
+        if not hasattr(self, "flood_dataset"):
+            flood_data_path = os.path.join(self.project_root, "data", "General_Flood_v3")
+            
+            # Define the transform for flood dataset
+            transform = transforms.Compose([
+                transforms.ToTensor(),  # Convert to tensor
+                transforms.Lambda(lambda x: x.to(self.dtype)),
+            ])
+            
+            self.flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
+        
+        # Setting up main parameters for explanation
+        class_id = 1  # Flood class ID
+        n_concepts = 3
+        n_refimgs = 12
+        layer = "encoder.features.15"  # Based on UNet example
+        mode = "relevance"
+        prediction_num = 0
+        
+        glocal_analysis_output_dir = "output/crp/unet_flood"
+        
+        # Apply all transform to the input test image. They are aplied here separately, but normally this is just done in the get_item method of the dataset.
+        # This is done to be consistent with the reference images.
+        image_tensor = self.flood_dataset.transform(image)
+        image_tensor = self.flood_dataset.resize(image_tensor)
+        
+        # Generate explanation
+        explanation_fig = plot_one_image_explanation(
+            model_name, self.flood_model, image_tensor, self.flood_dataset, 
+            class_id, layer, prediction_num, mode, n_concepts, n_refimgs, 
+            output_dir=glocal_analysis_output_dir
+        )
+        explanation_img = fig_to_array(explanation_fig)
+        
+        # Prepare explanation entity
+        original_filename = src_entity["parameters"]["value"]["FileName"]
+        original_entity_type = src_entity["type"]
+        
+        
+        explanation_entity = get_flood_segmentation_explanation_entity(
+            original_image_bucket=src_entity["bucket"]["value"],
+            original_image_filename=original_filename,
+            original_segmentation_mask_id=src_entity["segmentation"]["value"]["mask_id"],
+            explanation_image_bucket=FHHI_MINIO_BUCKET,
+            explanation_image_filename=f"tfa02/{original_entity_type}/{original_filename}",
+            class_id=class_id,
+            n_concepts=n_concepts,
+            n_refimgs=n_refimgs,
+            layer=layer,
+            mode=mode
+        )
+        
+        return explanation_entity, explanation_img
     
 
     def load_person_vehicle_model(self):
