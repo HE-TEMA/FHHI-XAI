@@ -28,7 +28,7 @@ ENV BASE_PATH='/tfa02'
 
 # The URL of the message broker to connect to
 ENV BROKER_URL=https://orion.tema.digital-enabler.eng.it
-t 
+
 
 # Define environment variables with default values
 # These variables are optional, and if not provided, the default values will be used
