@@ -28,15 +28,7 @@ ENV BASE_PATH='/tfa02'
 
 # The URL of the message broker to connect to
 ENV BROKER_URL=https://orion.tema.digital-enabler.eng.it
-# The ID of the topic to subscribe to or publish messages to
-ENV BROKER_ENTITY_ID=topic123
-# The type of the entity (topic or queue) to interact with
-ENV BROKER_TYPE_ID=type123
-# The ID of the subscription to use for receiving messages
-ENV BROKER_SUBSCRIPTION_ID=subscription123
-# The URL to which callback notifications will be sent
-ENV CALLBACK_URL=http://callback.example.com
-
+t 
 
 # Define environment variables with default values
 # These variables are optional, and if not provided, the default values will be used
