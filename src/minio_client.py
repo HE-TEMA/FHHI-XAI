@@ -6,8 +6,8 @@ import numpy as np
 import io
 
 MINIO_ENDPOINT= 'storage.tema.digital-enabler.eng.it:443'
-MINIO_ACCESS_KEY = 'D4xMAQylbJML0ppbLMtt'     # Used in all examples
-MINIO_SECRET= 'rTV2pwa2PMApAzgV3tssGf7NKNVobM3MalAaSXpY'      # Used in all examples
+MINIO_ACCESS_KEY = "AUMFK4CGDFORW7PC9URA"     # Used in all examples
+MINIO_SECRET= "v9L6zs+G8Qu0UKgfMi8FNIncXtZ+ASMJrAXQwpTB"      # Used in all examples
 FHHI_MINIO_BUCKET='fhhi'
 NAPLES_MINIO_BUCKET='naples'
 

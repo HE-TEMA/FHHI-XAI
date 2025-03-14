@@ -7,7 +7,7 @@ curl -X DELETE 'https://orion.tema.digital-enabler.eng.it/ngsi-ld/v1/subscriptio
 
 
 # define the POST_DATA_URL
-POST_DATA_URL="http://<your_ip_address>:<PORT>/explanation/post_data"
+POST_DATA_URL="http://<your_ip_address>:<PORT>/tfa02/post_data"
 
 echo "POST_DATA_URL: '$POST_DATA_URL'"
 
@@ -20,6 +20,12 @@ curl -X POST 'https://orion.tema.digital-enabler.eng.it/ngsi-ld/v1/subscriptions
     "name": "TFA02 inputs subscription",
     "description": "Subscription description",
     "entities": [
+        {
+            "type": "EOFloodExtent",
+        },  
+        {
+            "type": "EOBurntArea",
+        },
         {
             "type": "BurntSegmentation"
         },

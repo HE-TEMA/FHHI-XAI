@@ -21,7 +21,7 @@ if __name__ == "__main__":
 
     hostname = "http://localhost"
     port = 8080
-    endpoint = "explanation/post_data"
+    endpoint = "tfa02/post_data"
     url = f"{hostname}:{port}/{endpoint}"
 
     response = requests.post(url, json=entity_data)

@@ -54,6 +54,7 @@ Path for data is `datasets/data`.
      docker tag explanation_tfa02 ghcr.io/he-tema/explanation_tfa02:1.0
      docker push ghcr.io/he-tema/explanation_tfa02:1.0
      ```
+- Write to Nicola Colosi on tema slack to deploy the pushed container on the TEMA cluster.
 
 ### Run the docker container
 

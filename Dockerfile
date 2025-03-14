@@ -24,7 +24,7 @@ WORKDIR /app
 # The port on which the application will listen for incoming connections
 ENV PORT=8080
 # The basepath environment variable
-ENV BASE_PATH='/explanation'
+ENV BASE_PATH='/tfa02'
 
 # The URL of the message broker to connect to
 ENV BROKER_URL=https://orion.tema.digital-enabler.eng.it
