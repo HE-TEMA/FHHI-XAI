@@ -5,9 +5,15 @@ import logging
 import numpy as np
 import traceback
 from PIL import Image
+import io
+import tifffile as tiff
+import tempfile
 
+from src.datasets import DLR_dataset
 from src.explanator import Explanator
 from src.minio_client import MinIOClient, FHHI_MINIO_BUCKET, NAPLES_MINIO_BUCKET
+from src.utils_DLR import tile_array
+
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
 
@@ -32,14 +38,14 @@ def get_minio_client():
 
 def get_explanator():
     if 'explanator' not in g:
-        g.explanator = Explanator(project_root=PROJECT_ROOT)
+        g.explanator = Explanator(project_root=PROJECT_ROOT, logger=app.logger)
     return g.explanator
 
 
 # Route for the index page
 @app.route(f'{BASE_PATH}')
 def index():
-    return render_template('index.html', message='Welcome! This demonstration container illustrates how to integrate services. Feel free to explore and experiment.')
+    return render_template('index.html', message='Welcome! On this endpoint you can find the TFA02 component of the TEMA project.')
 
 
 # Route for the ping endpoint
@@ -81,24 +87,70 @@ def post_data():
         if entity_type not in explanator.VALID_ENTITY_TYPES:
             return jsonify({'error': f'Invalid entity type: {entity_type}.'}), 400
 
-        # Load the input image from MinIO
-        filename = entity["parameters"]["value"]["FileName"]
+        if entity_type in explanator.DLR_ENTITY_TYPES:
+            # Load the input image by an href
+            href = entity["data"]["value"]["href"]
+            print(f"Downloading image from: {href}")
 
-        minio_filename = f"{filename}"
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Download and save the file
+                img_path = os.path.join(temp_dir, "dlr_image.tif")
+                response = requests.get(href)
+                with open(img_path, 'wb') as f:
+                    f.write(response.content)
 
-        minio_client = get_minio_client()
+                 # Adjust parameters as needed
+                dataset = DLR_dataset(
+                    img_dir=temp_dir,
+                    mask_dir=None,
+                    input_bands_idx=[0, 1, 2, 3],  # Adjust based on the image bands
+                    tile_size=256,
+                    overlap=0.2,
+                    padding=True
+                )
 
-        app.logger.info("Downloading image from MinIO")
-        img = minio_client.download_image(NAPLES_MINIO_BUCKET, minio_filename)
-        if img is None:
-            return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
+                 # Get the processed image (first tile for now)
+                processed_img = dataset.img_arr[0]
+                
+                # Convert to a format suitable for visualization or further processing
+                processed_img_rgb = processed_img[:, :, :3]  # Take first 3 bands for RGB
+                processed_img_rgb = (processed_img_rgb - processed_img_rgb.min()) / (processed_img_rgb.max() - processed_img_rgb.min()) * 255
+                processed_img_rgb = processed_img_rgb.astype(np.uint8)
+                
+                # Convert to PIL for further processing or visualization
+                pil_img = Image.fromarray(processed_img_rgb)
+
+
+            # raw_img_data = requests.get(href).content
+            # # bytes object that is actually a .tif image
+            # # Create a BytesIO object from the raw data
+            # img_buffer = io.BytesIO(raw_img_data)
+            #  # Read the image using tifffile
+            # img = tiff.imread(img_buffer)
+            
+            # # Convert to numpy array if needed for processing
+            # img = np.array(img)
+
+            return jsonify({'message': 'DLR entity received', 'dlr_img': img.shape}), 200
+        else:
+            # Load the input image from MinIO for AUTH entities
+            filename = entity["parameters"]["value"]["FileName"]
+
+            minio_filename = f"{filename}"
+
+            minio_client = get_minio_client()
+
+            app.logger.info("Downloading image from MinIO")
+            img = minio_client.download_image(NAPLES_MINIO_BUCKET, minio_filename)
+            if img is None:
+                return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
 
         app.logger.info("Explaining entity")
-        explanation_entity, explanation_image = explanator.explain(entity_type, entity, img)
+        explanation_entity, explanation_images, exp_img_filenames = explanator.explain(entity_type, entity, img)
         
-        app.logger.info("Uploading explanation image to MinIO")
-        explanation_image_filename = explanation_entity[0]["explanation_image"]["value"]["filename"]
-        minio_client.upload_image(FHHI_MINIO_BUCKET, explanation_image_filename, explanation_image)
+        app.logger.info("Uploading explanation images to MinIO")
+        for explanation_image, explanation_image_filename in zip(explanation_images, exp_img_filenames):
+            minio_client.upload_image(FHHI_MINIO_BUCKET, explanation_image_filename, explanation_image)
 
         app.logger.info("Sending explanation entity to Orion")
         orion_response = update_entity(explanation_entity)

@@ -5,6 +5,8 @@ import numpy as np
 # Set non-interactive backend for matplotlib to avoid GUI issues in Flask
 import matplotlib
 matplotlib.use('Agg')
+import copy
+import logging
 
 from LCRP.models import get_model 
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
@@ -20,7 +22,8 @@ class Explanator:
     This is the main class used in the TFA-02 component. 
     """
     
-    def __init__(self, project_root: str):
+    def __init__(self, project_root: str, logger: logging.Logger):
+        self.logger = logger
         # General setup
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float32
@@ -37,9 +40,12 @@ class Explanator:
             "FloodSegmentation": self.explain_flood_segmentation,
             "PersonVehicleDetection": self.explain_person_vehicle_detection,
             "SmokeSegmentation": self.explain_smoke_segmentation,
+            "EOBurntArea": self.explain_eo_burnt_area,
+            "EOFloodExtent": self.explain_eo_flood_extent,
         }
 
         self.VALID_ENTITY_TYPES = list(self.entity_handlers.keys())
+        self.DLR_ENTITY_TYPES = {"EOBurntArea", "EOFloodExtent"}
     
     def explain(self, entity_type: str, src_entity: dict, image: np.ndarray):
         """Generate explanation for the given entity type and image.
@@ -60,6 +66,12 @@ class Explanator:
         
         # Call the handler method with the image
         return handler(src_entity, image)
+
+    def explain_eo_burnt_area(self, src_entity: dict, image: np.ndarray):
+        raise NotImplementedError("EO Burnt Area explanation is not implemented yet.")
+    
+    def explain_eo_flood_extent(self, src_entity: dict, image: np.ndarray):
+        raise NotImplementedError("EO Flood Extent explanation is not implemented yet.")
     
     def explain_burnt_segmentation(self, src_entity: dict, image: np.ndarray): 
         raise NotImplementedError("Burnt segmentation explanation is not implemented yet.")
@@ -128,21 +140,22 @@ class Explanator:
         original_filename = src_entity["parameters"]["value"]["FileName"]
         original_entity_type = src_entity["type"]
         
+        explanation_image_filename = f"tfa02/{original_entity_type}/{original_filename}"
         
         explanation_entity = get_flood_segmentation_explanation_entity(
             original_image_bucket=src_entity["bucket"]["value"],
             original_image_filename=original_filename,
             original_segmentation_mask_id=src_entity["segmentation"]["value"]["mask_id"],
             explanation_image_bucket=FHHI_MINIO_BUCKET,
-            explanation_image_filename=f"tfa02/{original_entity_type}/{original_filename}",
+            explanation_image_filename=explanation_image_filename,
             class_id=class_id,
             n_concepts=n_concepts,
             n_refimgs=n_refimgs,
             layer=layer,
             mode=mode
         )
-        
-        return explanation_entity, explanation_img
+
+        return explanation_entity, [explanation_img], [explanation_image_filename]
     
 
     def load_person_vehicle_model(self):
@@ -168,34 +181,47 @@ class Explanator:
         model_name = "yolov6s6"
 
         # Setting up main parameters
-        class_id = 1
         n_concepts = 3
-        n_refimgs = 12
+        n_refimgs = 2
         layer = "module.backbone.ERBlock_6.2.cspsppf.cv7.block.conv"
         mode = "relevance"
-        prediction_num = 0
 
         glocal_analysis_output_dir = "output/crp/yolo_person_car"
 
-        
+        original_predicted_boxes = src_entity["detection"]["value"]["boxes"]
+        original_filename = src_entity["parameters"]["value"]["FileName"]
+        original_filename_no_ext = os.path.splitext(original_filename)[0]
+        original_entity_type = src_entity["type"]
+
         # Apply transform as with the reference images
         image_tensor = self.person_car_dataset.transform(image)
 
+        explanation_boxes = copy.deepcopy(original_predicted_boxes)
+        num_boxes = len(explanation_boxes)
+        explanation_images = []
+        explanation_image_filenames = []
+        for prediction_num in range(num_boxes):
+            self.logger.debug(f"Generating explanation for box {prediction_num} of {num_boxes}")
 
-        explanation_fig = plot_one_image_explanation(model_name, self.person_vehicle_model, image_tensor, self.person_car_dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir)
-        explanation_img = fig_to_array(explanation_fig)
+            class_id = explanation_boxes[prediction_num]["category_id"]
+            explanation_fig = plot_one_image_explanation(model_name, self.person_vehicle_model, image_tensor, self.person_car_dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir)
+            explanation_img = fig_to_array(explanation_fig)
+            explanation_images.append(explanation_img)
 
-        original_filename = src_entity["parameters"]["value"]["FileName"]
-        original_entity_type = src_entity["type"]
+            explanation_file_name = f"tfa02/{original_entity_type}/{original_filename_no_ext}/object_{prediction_num}.png"
+            explanation_image_filenames.append(explanation_file_name)
+
+            explanation_boxes[prediction_num]["explanation_image"] = explanation_file_name
+            explanation_boxes[prediction_num]["explanation_image_bucket"] = FHHI_MINIO_BUCKET
+
+
 
         explanation_entity = get_person_vehicle_detection_explanation_entity(
             original_image_bucket=src_entity["bucket"]["value"],
             original_image_filename=original_filename,
-            original_detection_boxes=src_entity["detection"]["value"]["boxes"],
+            original_detection_boxes=original_predicted_boxes,
             original_detection_class_categories=src_entity["detection"]["value"]["class_categories"],
-            explanation_image_bucket=FHHI_MINIO_BUCKET,
-            explanation_image_filename= f"tfa02/{original_entity_type}/{original_filename}",
-            class_id=class_id,
+            explanation_boxes=explanation_boxes,
             n_concepts=n_concepts,
             n_refimgs=n_refimgs,
             layer=layer,
@@ -203,7 +229,7 @@ class Explanator:
             explained_box=prediction_num,
         )
 
-        return explanation_entity, explanation_img
+        return explanation_entity, explanation_images, explanation_image_filenames
 
     
     

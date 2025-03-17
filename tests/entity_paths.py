@@ -6,7 +6,13 @@ entity_type_to_entity_path = {
     "PersonVehicleDetection": "PersonVehicleDetection.json",
     "PersonVehicleDetectionTest": "PersonVehicleDetectionTest.json",
     "SmokeSegmentation": "SmokeSegmentation.json",
+    "EOBurntArea": "EOBurntArea.json",
+    "EOFloodExtent": "EOFloodExtent.json",
 }
+
+explanation_entities_list = [
+    "BurntSegmentationExplanation", "FireSegmentationExplanation", "FloodSegmentationExplanation", "PersonVehicleDetectionExplanation", "SmokeSegmentationExplanation", "EOBurntAreaExplanation", "EOFloodExtentExplanation"
+]
 
 entity_type_to_entity_id = {
     "BurntSegmentation": "",
