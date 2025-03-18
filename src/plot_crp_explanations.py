@@ -72,7 +72,7 @@ def plot_one_image_explanation(model_name, model, img, dataset, class_id, layer,
             img_ = F.to_pil_image(draw_segmentation_masks(sample_[:3, :, :], masks=mask, alpha=0.5, colors=["red"]))
 
         axs[0][0].imshow(np.asarray(img_))
-        axs[0][0].contour(mask, colors="black", linewidths=[2])
+        axs[0][0].contour(mask.cpu().numpy(), colors="black", linewidths=[2])
 
 
     elif "yolo" in model_name or "ssd" in model_name:
