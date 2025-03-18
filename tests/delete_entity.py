@@ -8,7 +8,7 @@ from entity_paths import entity_type_to_entity_path, entity_type_to_entity_id
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("entity_type", type=str, help="Entity type to test", choices=entity_type_to_entity_path.keys())
+    parser.add_argument("entity_type", type=str, help="Entity type to test", choices=entity_type_to_entity_id.keys())
 
     args = parser.parse_args()
 
@@ -22,8 +22,8 @@ if __name__ == "__main__":
         "entity_id": entity_id,
     }
     hostname = "http://localhost"
-    port = 4000
-    endpoint = "explanation/delete_entity"
+    port = 8080
+    endpoint = "tfa02/delete_entity"
     url = f"{hostname}:{port}/{endpoint}"
 
     response = requests.post(url, json=entity_data)

@@ -49,22 +49,16 @@ person_vehicle_detection_explanation_template = {
             "class_categories": None,
         },
     },
-    "explanation_image": {
-        "type": "Property",
-        "value": {
-            "bucket": None,
-            "filename": None,
-        },
-    },
     "explanation": {
         "type": "Property",
         "value": {
-            "class_id": None,
-            "n_concepts": None,
-            "n_refimgs": None,
-            "layer": None,
-            "mode": None,
-            "explained_box": None,
+            "boxes": None,
+            "parameters": {
+                "n_concepts": None,
+                "n_refimgs": None,
+                "layer": None,
+                "mode": None,
+            }
         }
     },
 }
@@ -79,7 +73,6 @@ def get_person_vehicle_detection_explanation_entity(
     n_refimgs,
     layer,
     mode,
-    explained_box,
 ):
     template = copy.deepcopy(person_vehicle_detection_explanation_template)
 
@@ -91,11 +84,10 @@ def get_person_vehicle_detection_explanation_entity(
     template["original_detection"]["value"]["boxes"] = original_detection_boxes
     template["original_detection"]["value"]["class_categories"] = original_detection_class_categories
     template["explanation"]["value"]["boxes"] = explanation_boxes
-    template["explanation"]["value"]["n_concepts"] = n_concepts
-    template["explanation"]["value"]["n_refimgs"] = n_refimgs
-    template["explanation"]["value"]["layer"] = layer
-    template["explanation"]["value"]["mode"] = mode
-    template["explanation"]["value"]["explained_box"] = explained_box
+    template["explanation"]["value"]["parameters"]["n_concepts"] = n_concepts
+    template["explanation"]["value"]["parameters"]["n_refimgs"] = n_refimgs
+    template["explanation"]["value"]["parameters"]["layer"] = layer
+    template["explanation"]["value"]["parameters"]["mode"] = mode
 
     # For some reason we need to upload a list of one element, according to AUTH example script
     return [template]

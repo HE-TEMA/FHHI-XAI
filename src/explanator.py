@@ -182,7 +182,7 @@ class Explanator:
 
         # Setting up main parameters
         n_concepts = 3
-        n_refimgs = 2
+        n_refimgs = 12
         layer = "module.backbone.ERBlock_6.2.cspsppf.cv7.block.conv"
         mode = "relevance"
 
@@ -226,7 +226,6 @@ class Explanator:
             n_refimgs=n_refimgs,
             layer=layer,
             mode=mode,
-            explained_box=prediction_num,
         )
 
         return explanation_entity, explanation_images, explanation_image_filenames

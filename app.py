@@ -9,7 +9,7 @@ import io
 import tifffile as tiff
 import tempfile
 
-from src.datasets import DLR_dataset
+from src.datasets.DLR_dataset import DatasetDLR
 from src.explanator import Explanator
 from src.minio_client import MinIOClient, FHHI_MINIO_BUCKET, NAPLES_MINIO_BUCKET
 from src.utils_DLR import tile_array
@@ -74,8 +74,15 @@ def post_data():
         app.logger.debug('POST request received.') 
         raw_data = request.get_json() 
 
-        # AUTH entities are a list of one element
-        entity = raw_data[0]
+        # AUTH entities are sometimes a list of one element
+        if isinstance(raw_data, list):
+            app.logger.debug(f'Received a list of {len(raw_data)} elements.')
+            entity = raw_data[0]
+        elif not isinstance(raw_data, dict):
+            return jsonify({'error': 'Invalid data type.', 'data type': f'{type(raw_data)}'}), 400
+        else:
+            app.logger.debug('Received a single entity as a dict.')
+            entity = raw_data
 
         entity_type = entity.get('type')
 
@@ -100,25 +107,20 @@ def post_data():
                     f.write(response.content)
 
                  # Adjust parameters as needed
-                dataset = DLR_dataset(
+                dataset = DatasetDLR(
                     img_dir=temp_dir,
                     mask_dir=None,
-                    input_bands_idx=[0, 1, 2, 3],  # Adjust based on the image bands
-                    tile_size=256,
-                    overlap=0.2,
-                    padding=True
+                    normalize_means_stds=[
+                        [0.1161, 0.1065, 0.1036, 0.2059],  # Means
+                        [0.0556, 0.0570, 0.0772, 0.1033],   # Stds
+                    ],
                 )
 
+                test_img, test_mask = dataset[0] 
                  # Get the processed image (first tile for now)
                 processed_img = dataset.img_arr[0]
                 
-                # Convert to a format suitable for visualization or further processing
-                processed_img_rgb = processed_img[:, :, :3]  # Take first 3 bands for RGB
-                processed_img_rgb = (processed_img_rgb - processed_img_rgb.min()) / (processed_img_rgb.max() - processed_img_rgb.min()) * 255
-                processed_img_rgb = processed_img_rgb.astype(np.uint8)
-                
-                # Convert to PIL for further processing or visualization
-                pil_img = Image.fromarray(processed_img_rgb)
+                img = processed_img.numpy()
 
 
             # raw_img_data = requests.get(href).content
