@@ -34,8 +34,8 @@ class DatasetDLR(Dataset):
         self.padding = padding
         self.only_RGB = only_RGB
 
-        self.img_files = natsorted(list(self.img_dir.glob("*.tif")), key=str)
-        self.mask_files = natsorted(list(self.mask_dir.glob("*.tif")), key=str) if self.mask_dir else None
+        self.img_files = natsorted(list(self.img_dir.glob("*.tif*")), key=str)
+        self.mask_files = natsorted(list(self.mask_dir.glob("*.tif*")), key=str) if self.mask_dir else None
 
         self.img_arr, self.msk_arr = self.load_data()
 
