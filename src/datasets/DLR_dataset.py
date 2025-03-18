@@ -100,7 +100,7 @@ class DatasetDLR(Dataset):
             mask_tensor = torch.from_numpy(mask).long()
             return img_tensor, mask_tensor
         else:
-            return img_tensor
+            return img_tensor, None
 
     def __len__(self):
         return self.img_arr.shape[0]

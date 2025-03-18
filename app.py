@@ -171,7 +171,7 @@ def post_data():
         if orion_response.status_code != 204:
             return jsonify(orion_json_response), orion_response.status_code 
 
-
+        explanation_image = explanation_images[0]  
         print(np.asarray(Image.fromarray(explanation_image)).shape)
         explanation_image = Image.fromarray(explanation_image)
         explanation_image.show()
