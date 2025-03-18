@@ -1,3 +1,4 @@
+import gc
 import os
 import torch
 import torchvision.transforms as transforms
@@ -14,6 +15,8 @@ from src.datasets.person_car_dataset import PersonCarDataset
 from src.datasets.flood_dataset import FloodDataset
 from src.entities import get_person_vehicle_detection_explanation_entity, get_flood_segmentation_explanation_entity
 from src.minio_client import FHHI_MINIO_BUCKET
+from src.memory_logging import log_cuda_memory
+
 
 
 class Explanator:
@@ -27,11 +30,17 @@ class Explanator:
         # General setup
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float32
+        
+        # Log initial memory state
+        log_cuda_memory(self.logger, "INIT")
 
         self.project_root = project_root
 
-        self.person_vehicle_model = self.load_person_vehicle_model()
-        self.person_car_dataset = self.load_person_car_data()
+        # Lazy loading approach - don't load models until needed
+        self._person_vehicle_model = None
+        self._person_car_dataset = None
+        self._flood_model = None
+        self._flood_dataset = None
 
         # Create a mapping from entity types to handler methods
         self.entity_handlers = {
@@ -46,18 +55,13 @@ class Explanator:
 
         self.VALID_ENTITY_TYPES = list(self.entity_handlers.keys())
         self.DLR_ENTITY_TYPES = {"EOBurntArea", "EOFloodExtent"}
-    
-    def explain(self, entity_type: str, src_entity: dict, image: np.ndarray):
-        """Generate explanation for the given entity type and image.
         
-        Args:
-            entity_type: Type of entity to explain (must be in VALID_ENTITY_TYPES)
-            image: Input to the corresponding model. This was also input to the entity that did Detection/Segmentation,
-                but for Explanations we need to run the model once again.
-            
-        Returns:
-            dict, np.ndarray: Explanation entity and explanation image
-        """
+
+
+    def explain(self, entity_type: str, src_entity: dict, image: np.ndarray):
+        """Generate explanation for the given entity type and image."""
+        log_cuda_memory(self.logger, f"BEFORE EXPLAIN {entity_type}")
+        
         if entity_type not in self.VALID_ENTITY_TYPES:
             raise ValueError(f"Invalid entity type: {entity_type}. Must be one of {self.VALID_ENTITY_TYPES}")
         
@@ -65,8 +69,14 @@ class Explanator:
         handler = self.entity_handlers.get(entity_type)
         
         # Call the handler method with the image
-        return handler(src_entity, image)
-
+        result = handler(src_entity, image)
+        
+        log_cuda_memory(self.logger, f"AFTER EXPLAIN {entity_type}")
+        # Clear unnecessary tensors from cache
+        torch.cuda.empty_cache()
+        
+        return result
+    
     def explain_eo_burnt_area(self, src_entity: dict, image: np.ndarray):
         raise NotImplementedError("EO Burnt Area explanation is not implemented yet.")
     
@@ -79,39 +89,35 @@ class Explanator:
 
     def explain_fire_segmentation(self, src_entity: dict, image: np.ndarray):
         raise NotImplementedError("Fire segmentation explanation is not implemented yet.")
+ 
+
+
+    @property
+    def flood_model(self):
+        if self._flood_model is None:
+            log_cuda_memory(self.logger, "BEFORE LOADING FLOOD MODEL")
+            model_name = "unet"
+            flood_model_path = os.path.join(self.project_root, "models", "unet_flood_modified.pt")
+            self._flood_model = get_model(model_name=model_name, classes=2, ckpt_path=flood_model_path, device=self.device, dtype=self.dtype)
+            log_cuda_memory(self.logger, "AFTER LOADING FLOOD MODEL")
+        return self._flood_model
     
-
-
-    def explain_flood_segmentation(self, src_entity: dict, image: np.ndarray):
-        """
-        Generate flood segmentation explanation using UNet model and CRP method.
-        
-        Args:
-            src_entity: Source entity with flood segmentation data
-            image: Input image as numpy array
-            
-        Returns:
-            Tuple of (explanation_entity, explanation_image)
-        """
-        # Load the flood segmentation model
-        model_name = "unet"
-        flood_model_path = os.path.join(self.project_root, "models", "unet_flood_modified.pt")
-        
-        # Load model if not already loaded
-        if not hasattr(self, "flood_model"):
-            self.flood_model = get_model(model_name=model_name, classes=2, ckpt_path=flood_model_path, device=self.device, dtype=self.dtype)
-        
-        # Load flood dataset if not already loaded
-        if not hasattr(self, "flood_dataset"):
+    @property
+    def flood_dataset(self):
+        if self._flood_dataset is None:
             flood_data_path = os.path.join(self.project_root, "data", "General_Flood_v3")
             
-            # Define the transform for flood dataset
             transform = transforms.Compose([
                 transforms.ToTensor(),  # Convert to tensor
                 transforms.Lambda(lambda x: x.to(self.dtype)),
             ])
             
-            self.flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
+            self._flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
+        return self._flood_dataset
+
+    def explain_flood_segmentation(self, src_entity: dict, image: np.ndarray):
+        """Generate flood segmentation explanation."""
+        log_cuda_memory(self.logger, "FLOOD_SEG START")
         
         # Setting up main parameters for explanation
         class_id = 1  # Flood class ID
@@ -123,17 +129,21 @@ class Explanator:
         
         glocal_analysis_output_dir = "output/crp/unet_flood"
         
-        # Apply all transform to the input test image. They are aplied here separately, but normally this is just done in the get_item method of the dataset.
-        # This is done to be consistent with the reference images.
+        # Apply transform to the input test image
+        log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
         image_tensor = self.flood_dataset.transform(image)
         image_tensor = self.flood_dataset.resize(image_tensor)
+        log_cuda_memory(self.logger, "AFTER IMAGE TRANSFORM")
         
-        # Generate explanation
+        # Generate explanation - this is likely the memory-intensive part
+        log_cuda_memory(self.logger, "BEFORE EXPLANATION GENERATION")
         explanation_fig = plot_one_image_explanation(
-            model_name, self.flood_model, image_tensor, self.flood_dataset, 
+            "unet", self.flood_model, image_tensor, self.flood_dataset, 
             class_id, layer, prediction_num, mode, n_concepts, n_refimgs, 
             output_dir=glocal_analysis_output_dir
         )
+        log_cuda_memory(self.logger, "AFTER EXPLANATION GENERATION")
+        
         explanation_img = fig_to_array(explanation_fig)
         
         # Prepare explanation entity
@@ -154,9 +164,28 @@ class Explanator:
             layer=layer,
             mode=mode
         )
-
+        
+        log_cuda_memory(self.logger, "FLOOD_SEG END")
+        # Clear cache
+        torch.cuda.empty_cache()
+        
         return explanation_entity, [explanation_img], [explanation_image_filename]
+
+
+
+    @property
+    def person_vehicle_model(self):
+        if self._person_vehicle_model is None:
+            log_cuda_memory(self.logger, "BEFORE LOADING PERSON VEHICLE MODEL")
+            self._person_vehicle_model = self.load_person_vehicle_model()
+            log_cuda_memory(self.logger, "AFTER LOADING PERSON VEHICLE MODEL")
+        return self._person_vehicle_model
     
+    @property
+    def person_car_dataset(self):
+        if self._person_car_dataset is None:
+            self._person_car_dataset = self.load_person_car_data()
+        return self._person_car_dataset
 
     def load_person_vehicle_model(self):
         # Load the person/vehicle detection model
@@ -176,46 +205,66 @@ class Explanator:
         return dataset
 
     def explain_person_vehicle_detection(self, src_entity: dict, image: np.ndarray):
-        # Implementation for person/vehicle detection explanation
-
+        """Generate person/vehicle detection explanation."""
+        log_cuda_memory(self.logger, "PERSON_VEHICLE START")
+        
         model_name = "yolov6s6"
-
-        # Setting up main parameters
         n_concepts = 3
         n_refimgs = 12
         layer = "module.backbone.ERBlock_6.2.cspsppf.cv7.block.conv"
         mode = "relevance"
-
+        
         glocal_analysis_output_dir = "output/crp/yolo_person_car"
-
+        
         original_predicted_boxes = src_entity["detection"]["value"]["boxes"]
         original_filename = src_entity["parameters"]["value"]["FileName"]
         original_filename_no_ext = os.path.splitext(original_filename)[0]
         original_entity_type = src_entity["type"]
-
-        # Apply transform as with the reference images
+        
+        # Apply transform
+        log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
         image_tensor = self.person_car_dataset.transform(image)
-
+        log_cuda_memory(self.logger, "AFTER IMAGE TRANSFORM")
+        
         explanation_boxes = copy.deepcopy(original_predicted_boxes)
         num_boxes = len(explanation_boxes)
+        
+        # Consider processing fewer boxes for debugging
+        # num_boxes = min(num_boxes, 2)  # Uncommenting this will process only 2 boxes max
+        
         explanation_images = []
         explanation_image_filenames = []
+        
         for prediction_num in range(num_boxes):
             self.logger.debug(f"Generating explanation for box {prediction_num} of {num_boxes}")
-
+            log_cuda_memory(self.logger, f"BEFORE BOX {prediction_num}")
+            
             class_id = explanation_boxes[prediction_num]["category_id"]
-            explanation_fig = plot_one_image_explanation(model_name, self.person_vehicle_model, image_tensor, self.person_car_dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir)
+            
+            # Clear cache before each box processing
+            torch.cuda.empty_cache()
+            
+            explanation_fig = plot_one_image_explanation(
+                model_name, self.person_vehicle_model, image_tensor, 
+                self.person_car_dataset, class_id, layer, prediction_num, 
+                mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir
+            )
+            
             explanation_img = fig_to_array(explanation_fig)
             explanation_images.append(explanation_img)
-
+            
             explanation_file_name = f"tfa02/{original_entity_type}/{original_filename_no_ext}/object_{prediction_num}.png"
             explanation_image_filenames.append(explanation_file_name)
-
+            
             explanation_boxes[prediction_num]["explanation_image"] = explanation_file_name
             explanation_boxes[prediction_num]["explanation_image_bucket"] = FHHI_MINIO_BUCKET
-
-
-
+            
+            log_cuda_memory(self.logger, f"AFTER BOX {prediction_num}")
+            
+            # Force garbage collection after each box
+            gc.collect()
+            torch.cuda.empty_cache()
+        
         explanation_entity = get_person_vehicle_detection_explanation_entity(
             original_image_bucket=src_entity["bucket"]["value"],
             original_image_filename=original_filename,
@@ -227,10 +276,13 @@ class Explanator:
             layer=layer,
             mode=mode,
         )
-
+        
+        log_cuda_memory(self.logger, "PERSON_VEHICLE END")
+        torch.cuda.empty_cache()
+        
         return explanation_entity, explanation_images, explanation_image_filenames
 
-    
+
     
     def explain_smoke_segmentation(self, src_entity: dict, image: np.ndarray):
         raise NotImplementedError("Smoke segmentation explanation is not implemented yet.")
