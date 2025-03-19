@@ -26,7 +26,7 @@ Path for data is `datasets/data`.
 ### Build the Docker image
 
 To build for the TEMA cloud.
-`docker build --platform linux/amd64 -t expalantion_tfa02 .`
+`docker build --platform linux/amd64 -t explanation_tfa02 .`
 
 For development on a mac build like this:
 `docker build -t explanation_tfa02 .`

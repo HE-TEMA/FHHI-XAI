@@ -41,6 +41,14 @@ def get_explanator():
         g.explanator = Explanator(project_root=PROJECT_ROOT, logger=app.logger)
     return g.explanator
 
+def get_bm_id():
+    if 'bm_id' not in g:
+        return None
+    return g.bm_id
+
+def set_bm_id(bm_id):
+    g.bm_id = bm_id
+
 
 # Route for the index page
 @app.route(f'{BASE_PATH}')
@@ -74,23 +82,34 @@ def post_data():
         app.logger.debug('POST request received.') 
         raw_data = request.get_json() 
 
-        # AUTH entities are sometimes a list of one element
-        if isinstance(raw_data, list):
-            app.logger.debug(f'Received a list of {len(raw_data)} elements.')
-            entity = raw_data[0]
-        elif not isinstance(raw_data, dict):
-            return jsonify({'error': 'Invalid data type.', 'data type': f'{type(raw_data)}'}), 400
-        else:
-            app.logger.debug('Received a single entity as a dict.')
-            entity = raw_data
+        app.logger.debug(f'Raw data received: {raw_data}')
 
-        entity_type = entity.get('type')
+        outer_entity_type = raw_data.get('type')
 
-        if entity_type is None:
-            err_msg = 'Entity type not provided.'
+        if outer_entity_type is None:
+            err_msg = f'Entity type not provided.'
             app.logger.error(err_msg)
             return jsonify({'error': err_msg}), 400
         
+        if outer_entity_type == "Notification":
+            # Actual entity is inside the data field
+            entity = raw_data.get('data')[0]
+            entity_type = entity.get('type')
+        else:
+            entity = raw_data
+            entity_type = outer_entity_type
+            app.logger.debug(f"Received outer entity type: {outer_entity_type} instead of Notification")
+        
+        if entity_type == "Alert":
+            bm_id = entity["bm_id"]["value"]
+            set_bm_id(bm_id)
+            msg = f"Received Alert with bm_id: {bm_id}"
+            return jsonify({'message': msg}), 200
+
+        bm_id = get_bm_id()
+
+        app.logger.debug(f"Current bm_id: {bm_id}")
+
         explanator = get_explanator()
 
         if entity_type not in explanator.VALID_ENTITY_TYPES:
@@ -98,58 +117,19 @@ def post_data():
             app.logger.error(err_msg)
             return jsonify({'error': err_msg}), 400
 
-        if entity_type in explanator.DLR_ENTITY_TYPES:
-            # Load the input image by an href
-            href = entity["data"]["value"]["href"]
-            print(f"Downloading image from: {href}")
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Download and save the file
-                img_path = os.path.join(temp_dir, "dlr_image.tif")
-                response = requests.get(href)
-                with open(img_path, 'wb') as f:
-                    f.write(response.content)
+        # Load the input image from MinIO for AUTH entities
+        filename = entity["parameters"]["value"]["FileName"]
+        src_image_bucket = entity["bucket"]["value"]
 
-                 # Adjust parameters as needed
-                dataset = DatasetDLR(
-                    img_dir=temp_dir,
-                    mask_dir=None,
-                    normalize_means_stds=[
-                        [0.1161, 0.1065, 0.1036, 0.2059],  # Means
-                        [0.0556, 0.0570, 0.0772, 0.1033],   # Stds
-                    ],
-                )
+        minio_filename = f"{filename}"
 
-                test_img, test_mask = dataset[0] 
-                 # Get the processed image (first tile for now)
-                processed_img = dataset.img_arr[0]
-                
-                img = processed_img.numpy()
+        minio_client = get_minio_client()
 
-
-            # raw_img_data = requests.get(href).content
-            # # bytes object that is actually a .tif image
-            # # Create a BytesIO object from the raw data
-            # img_buffer = io.BytesIO(raw_img_data)
-            #  # Read the image using tifffile
-            # img = tiff.imread(img_buffer)
-            
-            # # Convert to numpy array if needed for processing
-            # img = np.array(img)
-
-            return jsonify({'message': 'DLR entity received', 'dlr_img': img.shape}), 200
-        else:
-            # Load the input image from MinIO for AUTH entities
-            filename = entity["parameters"]["value"]["FileName"]
-
-            minio_filename = f"{filename}"
-
-            minio_client = get_minio_client()
-
-            app.logger.info("Downloading image from MinIO")
-            img = minio_client.download_image(NAPLES_MINIO_BUCKET, minio_filename)
-            if img is None:
-                return jsonify({'error': f'Error downloading image from MinIO: {minio_filename}'}), 500
+        app.logger.info("Downloading image from MinIO")
+        img = minio_client.download_image(src_image_bucket, minio_filename)
+        if img is None:
+            return jsonify({'error': f'Error downloading image from MinIO: {src_image_bucket}/{minio_filename}'}), 500
 
         app.logger.info("Explaining entity")
         explanation_entity, explanation_images, exp_img_filenames = explanator.explain(entity_type, entity, img)

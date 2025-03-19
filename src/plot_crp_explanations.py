@@ -1,6 +1,7 @@
 import os
 import sys
 import gc
+import time
 
 import copy
 from crp.concepts import ChannelConcept
@@ -13,6 +14,9 @@ import torchvision
 import torchvision.transforms.functional as F
 from torchvision.utils import draw_segmentation_masks, draw_bounding_boxes, make_grid
 import zennit.image as zimage
+import logging
+
+logger = logging.getLogger(__name__)
 
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
 from LCRP.utils.render import vis_opaque_img_border
@@ -161,6 +165,7 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
     
     print("Concepts:", topk)
     
+    attribution_start_ts = time.time()
     # Get conditional heatmaps
     conditions = [{"y": class_id, layer: c} for c in topk_ind]
     if mode == "relevance":
@@ -172,17 +177,22 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
     else:
         cond_heatmap = torch.stack([attr.activations[layer][0][t] for t in topk_ind]).detach().cpu()
     
+    logger.debug(f"Time to compute conditional heatmaps: {time.time() - attribution_start_ts:.2f}s")
+    
     # Process reference images in small batches
     print("Computing reference images...")
     log_memory("BEFORE REF IMAGES")
     
+    ref_images_start_ts = time.time()
     # Use a smaller batch size to reduce memory usage
     ref_imgs = fv.get_max_reference(topk_ind, layer, mode, (0, n_refimgs), composite=composite, rf=True,
                                   plot_fn=vis_opaque_img_border, batch_size=2)  # Reduced batch size
     
+    logger.debug(f"Time to compute reference images: {time.time() - ref_images_start_ts:.2f}s")
     log_memory("AFTER REF IMAGES")
     
     # Plotting
+    plotting_start_ts = time.time()
     print("Plotting...")
     resize = torchvision.transforms.Resize((150, 150))
     
@@ -236,6 +246,7 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
         
     plt.tight_layout()
     
+    logger.debug(f"Time to plot: {time.time() - plotting_start_ts:.2f}s")
     log_memory("AFTER PLOTTING")
     
     # Final cleanup
@@ -271,6 +282,10 @@ def plot_one_image_explanation(model_name, model, img, dataset, class_id, layer,
 
 
 def plot_one_image_explanation_old(model_name, model, img, dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir):
+    """This version of the function definitely works correctly, but for PersonVehicleDetection it takes 30GB of VRAM.
+    
+    To profile and optimize I introduced the optimized version above.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
     model.eval()

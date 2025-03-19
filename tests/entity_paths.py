@@ -8,6 +8,8 @@ entity_type_to_entity_path = {
     "SmokeSegmentation": "SmokeSegmentation.json",
     "EOBurntArea": "EOBurntArea.json",
     "EOFloodExtent": "EOFloodExtent.json",
+    "Notification": "Notification.json",
+    "Alert": "Alert.json",
 }
 
 explanation_entities_list = [
