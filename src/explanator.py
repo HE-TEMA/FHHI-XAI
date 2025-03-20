@@ -9,6 +9,8 @@ matplotlib.use('Agg')
 import copy
 import logging
 
+
+
 from LCRP.models import get_model 
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.datasets.person_car_dataset import PersonCarDataset
@@ -51,6 +53,7 @@ class Explanator:
             "SmokeSegmentation": self.explain_smoke_segmentation,
             "EOBurntArea": self.explain_eo_burnt_area,
             "EOFloodExtent": self.explain_eo_flood_extent,
+            "ImageMetadata": None,
         }
 
         self.VALID_ENTITY_TYPES = list(self.entity_handlers.keys())
@@ -58,7 +61,7 @@ class Explanator:
         
 
 
-    def explain(self, entity_type: str, src_entity: dict, image: np.ndarray):
+    def explain(self, entity_type: str, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         """Generate explanation for the given entity type and image."""
         log_cuda_memory(self.logger, f"BEFORE EXPLAIN {entity_type}")
         
@@ -69,7 +72,7 @@ class Explanator:
         handler = self.entity_handlers.get(entity_type)
         
         # Call the handler method with the image
-        result = handler(src_entity, image)
+        result = handler(original_image_bucket, original_image_filename, image)
         
         log_cuda_memory(self.logger, f"AFTER EXPLAIN {entity_type}")
         # Clear unnecessary tensors from cache
@@ -77,19 +80,17 @@ class Explanator:
         
         return result
     
-    def explain_eo_burnt_area(self, src_entity: dict, image: np.ndarray):
+    def explain_eo_burnt_area(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         raise NotImplementedError("EO Burnt Area explanation is not implemented yet.")
     
-    def explain_eo_flood_extent(self, src_entity: dict, image: np.ndarray):
+    def explain_eo_flood_extent(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         raise NotImplementedError("EO Flood Extent explanation is not implemented yet.")
     
-    def explain_burnt_segmentation(self, src_entity: dict, image: np.ndarray): 
+    def explain_burnt_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         raise NotImplementedError("Burnt segmentation explanation is not implemented yet.")
     
-
-    def explain_fire_segmentation(self, src_entity: dict, image: np.ndarray):
+    def explain_fire_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         raise NotImplementedError("Fire segmentation explanation is not implemented yet.")
- 
 
 
     @property
@@ -115,7 +116,7 @@ class Explanator:
             self._flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
         return self._flood_dataset
 
-    def explain_flood_segmentation(self, src_entity: dict, image: np.ndarray):
+    def explain_flood_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         """Generate flood segmentation explanation."""
         log_cuda_memory(self.logger, "FLOOD_SEG START")
         
@@ -147,15 +148,13 @@ class Explanator:
         explanation_img = fig_to_array(explanation_fig)
         
         # Prepare explanation entity
-        original_filename = src_entity["parameters"]["value"]["FileName"]
-        original_entity_type = src_entity["type"]
+        original_entity_type = "FloodSegmentation"
         
-        explanation_image_filename = f"tfa02/{original_entity_type}/{original_filename}"
+        explanation_image_filename = f"tfa02/{original_entity_type}/{original_image_filename}"
         
         explanation_entity = get_flood_segmentation_explanation_entity(
-            original_image_bucket=src_entity["bucket"]["value"],
-            original_image_filename=original_filename,
-            original_segmentation_mask_id=src_entity["segmentation"]["value"]["mask_id"],
+            original_image_bucket=original_image_bucket,
+            original_image_filename=original_image_filename,
             explanation_image_bucket=FHHI_MINIO_BUCKET,
             explanation_image_filename=explanation_image_filename,
             class_id=class_id,
@@ -204,8 +203,11 @@ class Explanator:
         dataset = PersonCarDataset(root_dir=person_car_data_path, split="train", transform=transform)
         return dataset
 
-    def explain_person_vehicle_detection(self, src_entity: dict, image: np.ndarray):
+    def explain_person_vehicle_detection(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         """Generate person/vehicle detection explanation."""
+        original_entity_type = "PersonVehicleDetection"
+        original_filename_no_ext = os.path.splitext(original_image_filename)[0]
+
         log_cuda_memory(self.logger, "PERSON_VEHICLE START")
         
         model_name = "yolov6s6"
@@ -216,30 +218,41 @@ class Explanator:
         
         glocal_analysis_output_dir = "output/crp/yolo_person_car"
         
-        original_predicted_boxes = src_entity["detection"]["value"]["boxes"]
-        original_filename = src_entity["parameters"]["value"]["FileName"]
-        original_filename_no_ext = os.path.splitext(original_filename)[0]
-        original_entity_type = src_entity["type"]
-        
         # Apply transform
         log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
         image_tensor = self.person_car_dataset.transform(image)
         log_cuda_memory(self.logger, "AFTER IMAGE TRANSFORM")
         
-        explanation_boxes = copy.deepcopy(original_predicted_boxes)
-        num_boxes = len(explanation_boxes)
-        
-        # Consider processing fewer boxes for debugging
-        # num_boxes = min(num_boxes, 2)  # Uncommenting this will process only 2 boxes max
+        # We need to run the model to get the predicted boxes
+        test_img = self.person_car_dataset.transform(image)
+        test_img = test_img.unsqueeze(0)
+
+        scores, boxes = self.person_vehicle_model.predict_with_boxes(test_img)
+        num_boxes = boxes.shape[1]
+        self.logger.debug(f"Number of boxes: {num_boxes}")
+        boxes = boxes[0].cpu().detach().numpy()
+
+        class_ids = scores[0].argmax(dim=1)
+        confidences = scores[0].max(dim=1).values
+
         
         explanation_images = []
         explanation_image_filenames = []
         
+        explanation_boxes = [] 
         for prediction_num in range(num_boxes):
+            exp_box = {}
+
+            exp_box["object_id"] = prediction_num
+            exp_box["bbox"] = boxes[prediction_num].tolist()
+            class_id = class_ids[prediction_num].item()
+            confidence = confidences[prediction_num].item()
+            exp_box["class_id"] = class_id
+            exp_box["confidences"] = confidence
+
             self.logger.debug(f"Generating explanation for box {prediction_num} of {num_boxes}")
             log_cuda_memory(self.logger, f"BEFORE BOX {prediction_num}")
             
-            class_id = explanation_boxes[prediction_num]["category_id"]
             
             # Clear cache before each box processing
             torch.cuda.empty_cache()
@@ -256,14 +269,15 @@ class Explanator:
             explanation_file_name = f"tfa02/{original_entity_type}/{original_filename_no_ext}/object_{prediction_num}.png"
             explanation_image_filenames.append(explanation_file_name)
             
-            explanation_boxes[prediction_num]["explanation_image"] = explanation_file_name
-            explanation_boxes[prediction_num]["explanation_image_bucket"] = FHHI_MINIO_BUCKET
+            exp_box["explanation_image"] = explanation_file_name
+            exp_box["explanation_image_bucket"] = FHHI_MINIO_BUCKET
             
             log_cuda_memory(self.logger, f"AFTER BOX {prediction_num}")
             
             # Force garbage collection after each box
             gc.collect()
             torch.cuda.empty_cache()
+            explanation_boxes.append(exp_box)
         
         explanation_entity = get_person_vehicle_detection_explanation_entity(
             original_image_bucket=src_entity["bucket"]["value"],

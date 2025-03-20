@@ -8,14 +8,29 @@
 # Use the latest Python image as the base. This image will provide the necessary Python runtime environment
 FROM python:3.8.12
 
+# First copy just the requirements file
+COPY requirements.txt /app/
+
+# Set the working directory to /app. This directory will be the default location for any subsequent commands executed within the container
+WORKDIR /app
+
+# Install redis-server
+# and dependencies for CV2
+RUN apt-get update && \
+    apt-get install -y redis-server supervisor ffmpeg libsm6 libxext6 && \
+    mkdir -p /var/log/supervisor
+
+# Configure supervisor
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Install the dependencies specified in requirements.txt
+# This command installs all Python packages listed in the requirements.txt file
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the necessary files into the working directory (/app) in the container
 # This includes all files from the current directory (where the Dockerfile is located) into the /app directory within the container
 COPY . /app
 
-
-# Set the working directory to /app. This directory will be the default location for any subsequent commands executed within the container
-WORKDIR /app
 
 
 # Define mandatory environment variables without default values
@@ -38,16 +53,22 @@ ENV DEBUG=False
 # The processing unit to be used (cpu or gpu). We set it to gpu
 ENV PROCESSING_UNIT=gpu 
 
-
-# Install the dependencies specified in requirements.txt
-# This command installs all Python packages listed in the requirements.txt file
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Dependencies for CV2
-RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
+# Redis is used to store tasks.
+ENV REDIS_HOST=localhost
+ENV REDIS_PORT=6379
 
 
+
+# Expose the application port
+EXPOSE ${PORT}
+
+
+# Previous version withou supervisor for async processing
 # Run the application when the container starts
 # This command specifies the default command to execute when the container is launched
 # It runs the Python script named "app.py", which is the main entry point for the application
-CMD ["python", "app.py"]
+# CMD ["python", "app.py"]
+
+# New version with async server with redis and separate processor worker
+# Start supervisord
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

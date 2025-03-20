@@ -133,13 +133,6 @@ flood_segmentation_explanation_template = {
             "filename": None,
         },
     },
-    # Comes from the original segmentation entity
-    "original_segmentation": {
-        "type": "Property",
-        "value": {
-            "mask_id": None,
-        },
-    },
     "explanation_image": {
         "type": "Property",
         "value": {
@@ -162,7 +155,6 @@ flood_segmentation_explanation_template = {
 def get_flood_segmentation_explanation_entity(
     original_image_bucket,
     original_image_filename,
-    original_segmentation_mask_id,
     explanation_image_bucket,
     explanation_image_filename,
     class_id,
@@ -178,7 +170,6 @@ def get_flood_segmentation_explanation_entity(
     template["timestamp"]["value"] = timestamp
     template["original_image"]["value"]["bucket"] = original_image_bucket
     template["original_image"]["value"]["filename"] = original_image_filename
-    template["original_segmentation"]["value"]["mask_id"] = original_segmentation_mask_id
     template["explanation_image"]["value"]["bucket"] = explanation_image_bucket
     template["explanation_image"]["value"]["filename"] = explanation_image_filename
     template["explanation"]["value"]["class_id"] = class_id

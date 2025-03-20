@@ -10,6 +10,7 @@ entity_type_to_entity_path = {
     "EOFloodExtent": "EOFloodExtent.json",
     "Notification": "Notification.json",
     "Alert": "Alert.json",
+    "ImageMetadata": "ImageMetadata.json",
 }
 
 explanation_entities_list = [
