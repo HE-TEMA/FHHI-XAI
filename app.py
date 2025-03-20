@@ -283,7 +283,7 @@ def post_data():
                 src_image_bucket, 
                 src_image_filename,
                 task_id,
-                job_timeout='1h'  # Set an appropriate timeout
+                job_timeout='12h'  # Set an appropriate timeout
             )
             task_ids.append(task_id)
         

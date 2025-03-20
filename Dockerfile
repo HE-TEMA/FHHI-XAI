@@ -1,74 +1,59 @@
-# Dockerfile for building a Python application container
-# This Dockerfile sets up a container environment for running a Python application.
-# It installs the necessary dependencies from requirements.txt, sets up environment variables,
-# and runs the main Python script app.py when the container starts.
-# Prerequisites: Docker installed on the host system
+# Optimized Dockerfile for Python application
+# Uses multi-stage build and improved layer caching
 
+# Build stage for installing dependencies
+FROM python:3.8.12-slim AS builder
 
-# Use the latest Python image as the base. This image will provide the necessary Python runtime environment
-FROM python:3.8.12
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# First copy just the requirements file
-COPY requirements.txt /app/
+# Set working directory
+WORKDIR /build
 
-# Set the working directory to /app. This directory will be the default location for any subsequent commands executed within the container
+# Copy and install requirements first (better layer caching)
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --wheel-dir /build/wheels -r requirements.txt
+
+# Final stage
+FROM python:3.8.12-slim
+
+# Set environment variables
+ENV PORT=8080 \
+    BASE_PATH='/tfa02' \
+    BROKER_URL=https://orion.tema.digital-enabler.eng.it \
+    DEBUG=False \
+    PROCESSING_UNIT=gpu \
+    REDIS_HOST=localhost \
+    REDIS_PORT=6379
+
 WORKDIR /app
 
-# Install redis-server
-# and dependencies for CV2
-RUN apt-get update && \
-    apt-get install -y redis-server supervisor ffmpeg libsm6 libxext6 && \
-    mkdir -p /var/log/supervisor
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    redis-server \
+    supervisor \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/log/supervisor /var/lib/redis \
+    && chown -R redis:redis /var/lib/redis \
+    && rm -f /var/lib/redis/dump.rdb
+
+# Copy wheels from builder stage and install
+COPY --from=builder /build/wheels /wheels
+RUN pip install --no-cache-dir /wheels/*
 
 # Configure supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Install the dependencies specified in requirements.txt
-# This command installs all Python packages listed in the requirements.txt file
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy application code (done last to maximize caching)
+COPY . .
 
-# Copy the necessary files into the working directory (/app) in the container
-# This includes all files from the current directory (where the Dockerfile is located) into the /app directory within the container
-COPY . /app
-
-
-
-# Define mandatory environment variables without default values
-# These variables are essential for the proper functioning of the application, and users must provide values for them during container runtime
-
-# The port on which the application will listen for incoming connections
-ENV PORT=8080
-# The basepath environment variable
-ENV BASE_PATH='/tfa02'
-
-# The URL of the message broker to connect to
-ENV BROKER_URL=https://orion.tema.digital-enabler.eng.it
-
-
-# Define environment variables with default values
-# These variables are optional, and if not provided, the default values will be used
-
-# Whether debugging mode is enabled. Default is set to False
-ENV DEBUG=False        
-# The processing unit to be used (cpu or gpu). We set it to gpu
-ENV PROCESSING_UNIT=gpu 
-
-# Redis is used to store tasks.
-ENV REDIS_HOST=localhost
-ENV REDIS_PORT=6379
-
-
-
-# Expose the application port
+# Expose port
 EXPOSE ${PORT}
 
-
-# Previous version withou supervisor for async processing
-# Run the application when the container starts
-# This command specifies the default command to execute when the container is launched
-# It runs the Python script named "app.py", which is the main entry point for the application
-# CMD ["python", "app.py"]
-
-# New version with async server with redis and separate processor worker
 # Start supervisord
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
