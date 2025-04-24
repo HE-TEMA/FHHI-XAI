@@ -179,7 +179,10 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
     img_prototype = F.to_pil_image(draw_segmentation_masks(sample_prototype[:3, :, :][0], masks=mask_prototype, alpha=0.3, colors=["red"]))
 
     # Defining plot
-    fig, axs = plt.subplots(n_concepts, 6, gridspec_kw={'width_ratios': [1, 1, n_refimgs / 4, 1, 1, 1]}, figsize=(4 * n_refimgs / 4, 1.8 * n_concepts), dpi=200)
+    if n_concepts > 3:
+        fig, axs = plt.subplots(n_concepts, 6, gridspec_kw={'width_ratios': [1, 1, n_refimgs / 4, 1, 1, 1]}, figsize=(4 * n_refimgs / 4, 1.8 * n_concepts), dpi=200)
+    else: 
+        fig, axs = plt.subplots(3, 6, gridspec_kw={'width_ratios': [1, 1, n_refimgs / 4, 1, 1, 1]}, figsize=(4 * n_refimgs / 4, 1.8 * 3), dpi=200)
     resize = torchvision.transforms.Resize((150, 150), antialias=True)
 
     # Populate the subplots with relevant visualizations for each selected concept
@@ -218,79 +221,81 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
                     ax.text(0.5, -0.35, outlier_text, transform=ax.transAxes, ha="center", fontsize=10, fontweight='bold', color="red" if outlier_text == "Outlier" else "green", bbox=bbox_props)
                 else:
                     ax.axis("off")
+            try:
+                if c == 1:
+                    if r == 0:
+                        ax.set_title("Input localization")
+                    ax.imshow(imgify(cond_heatmap[r], symmetric=True, cmap="bwr", padding=True))
+                    ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(channel_rels[0][topk_ind[r]] * 100):2.1f}\%")
 
-            if c == 1:
-                if r == 0:
-                    ax.set_title("Input localization")
-                ax.imshow(imgify(cond_heatmap[r], symmetric=True, cmap="bwr", padding=True))
-                ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(channel_rels[0][topk_ind[r]] * 100):2.1f}\%")
+                elif c == 2:
+                    if r == 0 and c == 2:
+                        ax.set_title("concept visualization")
+                    grid = make_grid([resize(torch.from_numpy(np.asarray(i).copy()).permute((2, 0, 1))) for i in ref_imgs[topk_ind[r]]], nrow=int(n_refimgs / 2), padding=0)
+                    grid = np.array(zimage.imgify(grid.detach().cpu()))
+                    img = imgify(ref_imgs[topk_ind[r]][c - 2], padding=True)
+                    ax.imshow(grid)
+                    ax.yaxis.set_label_position("right")
 
-            elif c == 2:
-                if r == 0 and c == 2:
-                    ax.set_title("concept visualization")
-                grid = make_grid([resize(torch.from_numpy(np.asarray(i).copy()).permute((2, 0, 1))) for i in ref_imgs[topk_ind[r]]], nrow=int(n_refimgs / 2), padding=0)
-                grid = np.array(zimage.imgify(grid.detach().cpu()))
-                img = imgify(ref_imgs[topk_ind[r]][c - 2], padding=True)
-                ax.imshow(grid)
-                ax.yaxis.set_label_position("right")
+                elif c == 3:
+                    plt.rc('text', usetex=False)
+                    plt.rcParams['font.family'] = 'DejaVu Sans'
+                    bold_font = FontProperties(weight='bold')
 
-            elif c == 3:
-                plt.rc('text', usetex=False)
-                plt.rcParams['font.family'] = 'DejaVu Sans'
-                bold_font = FontProperties(weight='bold')
+                    if r == 0:
+                        ax.set_title("Difference to prototype")
+                    ax.imshow(np.zeros((150, 150, 3)), alpha=0.2, cmap=None)
+                    delta_R = (channel_rels[0][topk_ind[r]].round(decimals=3) - mean[topk_ind[r]].round(decimals=3)) * 100
+                    if delta_R > 2:
+                        textstr = f"ΔR = {delta_R:+2.1f}%\n⚠ over-used"
+                        edge_color = "#ff0000"  # red for over-used
+                    elif delta_R < -2:
+                        textstr = f"ΔR = {delta_R:+2.1f}%\n⚠ under-used"
+                        edge_color = "#ff0000"  # red for under-used
+                    else:
+                        textstr = f"ΔR = {delta_R:+2.1f}%\n✓ similar"
+                        edge_color = "#00cc00"  # green for similar
+            
+                    # Add a rectangle patch
+                    rect = patches.Rectangle((0, 0), 150, 150, linewidth=3, edgecolor=edge_color, facecolor='white')
+                    ax.add_patch(rect)
+                    # Split the text to handle the symbol and text separately
+                    lines = textstr.split('\n')
+                    symbol_line = lines[1]
+                    text_line = lines[0]
 
-                if r == 0:
-                    ax.set_title("Difference to prototype")
-                ax.imshow(np.zeros((150, 150, 3)), alpha=0.2, cmap=None)
-                delta_R = (channel_rels[0][topk_ind[r]].round(decimals=3) - mean[topk_ind[r]].round(decimals=3)) * 100
-                if delta_R > 2:
-                    textstr = f"ΔR = {delta_R:+2.1f}%\n⚠ over-used"
-                    edge_color = "#ff0000"  # red for over-used
-                elif delta_R < -2:
-                    textstr = f"ΔR = {delta_R:+2.1f}%\n⚠ under-used"
-                    edge_color = "#ff0000"  # red for under-used
-                else:
-                    textstr = f"ΔR = {delta_R:+2.1f}%\n✓ similar"
-                    edge_color = "#00cc00"  # green for similar
+                    # Add text with separate properties for the symbol
+                    ax.text(75, 60, text_line, fontsize=10, verticalalignment='center', horizontalalignment='center', bbox=dict(facecolor=edge_color, edgecolor='none'))
+                    ax.text(75, 90, symbol_line, fontproperties=bold_font, verticalalignment='center', horizontalalignment='center', color=edge_color)
 
-                # Add a rectangle patch
-                rect = patches.Rectangle((0, 0), 150, 150, linewidth=3, edgecolor=edge_color, facecolor='white')
-                ax.add_patch(rect)
-                # Split the text to handle the symbol and text separately
-                lines = textstr.split('\n')
-                symbol_line = lines[1]
-                text_line = lines[0]
-
-                # Add text with separate properties for the symbol
-                ax.text(75, 60, text_line, fontsize=10, verticalalignment='center', horizontalalignment='center', bbox=dict(facecolor=edge_color, edgecolor='none'))
-                ax.text(75, 90, symbol_line, fontproperties=bold_font, verticalalignment='center', horizontalalignment='center', color=edge_color)
-
-                ax.set_xlim([0, 150])
-                ax.set_ylim([0, 150])
-                ax.axis("off")
-
-            elif c == 5:
-                if r == 0:
-                    ax.set_title("prototype")
-                    fv.dataset = dataset
-                    img = imgify(fv.get_data_sample(closest_sample_to_mean, preprocessing=False)[0][0])
-                    fv.dataset = dataset
-                    ax.imshow(img)
-                    ax.imshow(np.asarray(img_prototype))
-                    ax.contour(mask_prototype, colors="black", linewidths=[1])
-                elif r == 1:
-                    ax.set_title("heatmap")
-                    img = imgify(attr_p.heatmap, cmap="bwr", symmetric=True)
-                    ax.imshow(img)
-                else:
+                    ax.set_xlim([0, 150])
+                    ax.set_ylim([0, 150])
                     ax.axis("off")
-            elif c == 4:
-                if r == 0:
-                    ax.set_title("Prototype localization")
-                ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True))
-                ax.yaxis.set_label_position("right")
 
-                ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(mean[topk_ind[r]] * 100):2.1f}\%")
+                elif c == 5:
+                    if r == 0:
+                        ax.set_title("prototype")
+                        fv.dataset = dataset
+                        img = imgify(fv.get_data_sample(closest_sample_to_mean, preprocessing=False)[0][0])
+                        fv.dataset = dataset
+                        ax.imshow(img)
+                        ax.imshow(np.asarray(img_prototype))
+                        ax.contour(mask_prototype, colors="black", linewidths=[1])
+                    elif r == 1:
+                        ax.set_title("heatmap")
+                        img = imgify(attr_p.heatmap, cmap="bwr", symmetric=True)
+                        ax.imshow(img)
+                    else:
+                        ax.axis("off")
+                elif c == 4:
+                    if r == 0:
+                        ax.set_title("Prototype localization")
+                    ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True))
+                    ax.yaxis.set_label_position("right")
+
+                    ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(mean[topk_ind[r]] * 100):2.1f}\%")
+            except IndexError:
+                axs[r][c].axis("off")
 
             ax.set_xticks([])
             ax.set_yticks([])
