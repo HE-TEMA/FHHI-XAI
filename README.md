@@ -68,5 +68,44 @@ Edit the file if you want to change some environment variables
 ./run_docker.sh
 ```
 
+### Development
+
+During development, you can run the application components separately in different terminal tabs for easier debugging and log monitoring:
+
+1. Start Redis server:
+```bash
+redis-server
+```
+
+2. Start the Flask application:
+```bash
+python app.py
+```
+
+3. Start the worker process:
+```bash
+python worker.py
+```
+
+The application will be available at `http://localhost:8080/tfa02` by default.
+
+Note: For production deployment, use the Docker container as described in the "Run the docker container" section above.
+
+### Testing
+
+You can test the application using the provided test script located in the `tests/` folder. There are two ways to run the tests:
+
+1. Local testing (sends notifications to local Redis):
+```bash
+python tests/test_post_data.py ImageMetadata
+```
+
+2. Cloud testing (sends notifications to TEMA cloud):
+```bash
+python tests/test_post_data.py ImageMetadata --cloud
+```
+
+The test script will send sample image metadata to the application and you should see the processing results in the logs of both the Flask application and the worker process.
+
 
 
