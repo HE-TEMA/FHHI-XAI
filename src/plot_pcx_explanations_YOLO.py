@@ -49,7 +49,7 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
             if missing_keys:
                 print(f"Calculating and saving missing reference images for keys: {missing_keys}")
                 new_refs = fv.get_max_reference([int(k) for k in missing_keys], layer_name, "relevance", (0, n_ref),
-                                                composite=composite, rf=True, plot_fn=vis_opaque_img_border, batch_size=32)
+                                                composite=composite, rf=True, plot_fn=vis_opaque_img_border, batch_size=2)
                 for key, images_list in new_refs.items():
                     group = f.create_group(str(key))
                     assert len(images_list) >= n_ref
