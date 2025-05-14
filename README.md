@@ -70,6 +70,13 @@ Edit the file if you want to change some environment variables
 
 ### Development
 
+#### Install dependencies
+```bash
+conda create -n tema python=3.8
+conda activate tema
+pip install -r requirements.txt
+```
+
 During development, you can run the application components separately in different terminal tabs for easier debugging and log monitoring:
 
 1. Start Redis server:
@@ -79,8 +86,9 @@ redis-server
 
 2. Start the Flask application:
 ```bash
-python app.py
+DEBUG=1 python app.py
 ```
+DEBUG=1 will make the app reload on any code changes, remove if you don't want this.
 
 3. Start the worker process:
 ```bash
