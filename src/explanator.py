@@ -239,8 +239,8 @@ class Explanator:
         self.logger.debug(f"Number of boxes: {num_boxes}")
 
         # Only for debug
-        self.logger.warning(f"Changing num_boxes from {num_boxes} to 1 for debug")
-        num_boxes = 2
+        # self.logger.warning(f"Changing num_boxes from {num_boxes} to 2 for debug")
+        # num_boxes = 2
 
         boxes = boxes[0].cpu().detach().numpy().tolist()
 
