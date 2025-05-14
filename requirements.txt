@@ -14,7 +14,7 @@ thop  # FLOPs computation
 yacs
 natsort
 # PCX requirements
-h5py=3.11.0
+h5py>=3.11.0
 # app.py requirements
 flask>=2.2.5
 requests==2.26.0
