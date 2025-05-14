@@ -1,28 +1,20 @@
 import os
 import torch
-import copy
 import torchvision
 import numpy as np
-import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 # Add the parent directory to the Python path - bad practice, but it's just for the example
 import sys
 
 sys.path.append("..")
-from src.glocal_analysis import run_analysis
-from src.datasets.flood_dataset import FloodDataset
-from src.datasets.DLR_dataset import DatasetDLR
-from src.plot_crp_explanations import plot_explanations, plot_one_image_explanation
 #from src.minio_client import MinIOClient
-from LCRP.models import get_model
 from crp.helper import get_layer_names
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
 from crp.concepts import ChannelConcept
 from sklearn.mixture import GaussianMixture
 from LCRP.utils.render import vis_opaque_img_border
 from crp.image import imgify
-from torchvision.utils import draw_segmentation_masks, draw_bounding_boxes, make_grid
-import zennit.image as zimage
+from torchvision.utils import draw_bounding_boxes, make_grid
 import h5py
 from PIL import Image
 import torchvision.transforms.functional as F
@@ -88,13 +80,12 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
 
 
 def plot_pcx_explanations(
-        class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
-    ):
+    class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
+):
     img, t = dataset[sample_id]
 
-
     fig = plot_one_image_pcx_explanation(
-        class_id, model_name, model, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
+        model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
     )
     plt.figure(fig)
 
@@ -120,8 +111,8 @@ def plot_pcx_explanations(
 
 
 def plot_one_image_pcx_explanation(
-        class_id, model_name, model, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
-    ):
+    model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
+):
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Model has to be in eval state
@@ -145,7 +136,7 @@ def plot_one_image_pcx_explanation(
     cc = ChannelConcept()
 
     # Getting the sample we selected
-    data, t = dataset[sample_id]
+    data = img
     data = data[None, ...].to(device)
 
     # Loading relevances for this layer
@@ -156,6 +147,10 @@ def plot_one_image_pcx_explanation(
     # Initialize Gaussian Mixture Model (GMM) with specified number of prototypes as components
     cache_path = f'output/pcx/gmms/gmm_cache_{layer_name}_class_{class_id}.pkl'
     prototype_cache_path = f'output/pcx/gmm_prototypes/prototype_gmms_cache_{layer_name}_class_{class_id}.pkl'
+
+    # Create directories if they do not exist
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    os.makedirs(os.path.dirname(prototype_cache_path), exist_ok=True)
 
     if os.path.exists(cache_path) and os.path.exists(prototype_cache_path):
         # Load the GMM and individual GMMs from the cache files
@@ -423,4 +418,3 @@ def plot_one_image_pcx_explanation(
             ax.set_xticks([]); ax.set_yticks([])
 
     return fig
-   

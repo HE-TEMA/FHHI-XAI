@@ -13,6 +13,7 @@ import logging
 
 from LCRP.models import get_model 
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
+from src.plot_pcx_explanations_YOLO import plot_one_image_pcx_explanation
 from src.datasets.person_car_dataset import PersonCarDataset
 from src.datasets.flood_dataset import FloodDataset
 from src.entities import get_person_vehicle_detection_explanation_entity, get_flood_segmentation_explanation_entity
@@ -118,7 +119,7 @@ class Explanator:
     def explain_flood_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         """Generate flood segmentation explanation."""
         log_cuda_memory(self.logger, "FLOOD_SEG START")
-        
+
         # Setting up main parameters for explanation
         class_id = 1  # Flood class ID
         n_concepts = 3
@@ -212,10 +213,17 @@ class Explanator:
         model_name = "yolov6s6"
         n_concepts = 3
         n_refimgs = 12
-        layer = "module.backbone.ERBlock_6.2.cspsppf.cv7.block.conv"
+        # This one was used before for CRP
+        # layer = "module.backbone.ERBlock_6.2.cspsppf.cv7.block.conv"
+        # This one suggested by Jawher for PCX
+        layer = 'module.backbone.ERBlock_3.0.rbr_dense.conv'
+        prototype_dict = {0: 4, 1: 5}
+
         mode = "relevance"
 
-        glocal_analysis_output_dir = "output/crp/yolo_person_car"
+        crp_output_dir = "output/crp/yolo_person_car"
+        pcx_output_dir = "output/pcx/yolo_person_car"
+        ref_imgs_path = "output/ref_imgs_12"
 
         # Apply transform
         log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
@@ -231,8 +239,8 @@ class Explanator:
         self.logger.debug(f"Number of boxes: {num_boxes}")
 
         # Only for debug
-        # self.logger.warning(f"Changing num_boxes from {num_boxes} to 1 for debug")
-        # num_boxes = 1
+        self.logger.warning(f"Changing num_boxes from {num_boxes} to 1 for debug")
+        num_boxes = 2
 
         boxes = boxes[0].cpu().detach().numpy().tolist()
 
@@ -242,7 +250,7 @@ class Explanator:
         explanation_images = []
         explanation_image_filenames = []
         
-        explanation_boxes = [] 
+        explanation_boxes = []
         for prediction_num in range(num_boxes):
             exp_box = {}
 
@@ -259,10 +267,23 @@ class Explanator:
             # Clear cache before each box processing
             torch.cuda.empty_cache()
             
-            explanation_fig = plot_one_image_explanation(
-                model_name, self.person_vehicle_model, image_tensor, 
-                self.person_car_dataset, class_id, layer, prediction_num, 
-                mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir
+            # CRP visualization
+            # explanation_fig = plot_one_image_explanation(
+            #     model_name, self.person_vehicle_model, image_tensor, 
+            #     self.person_car_dataset, class_id, layer, prediction_num, 
+            #     mode, n_concepts, n_refimgs, output_dir=glocal_analysis_output_dir
+            # )
+
+            # PCX visualization
+            explanation_fig = plot_one_image_pcx_explanation(
+                model_name, self.person_vehicle_model, image_tensor,
+                self.person_car_dataset, class_id, n_concepts, n_refimgs,
+                num_prototypes=prototype_dict,
+                prediction_num=prediction_num,
+                layer_name=layer,
+                ref_imgs_path=ref_imgs_path,
+                output_dir_pcx=pcx_output_dir,
+                output_dir_crp=crp_output_dir,
             )
             
             explanation_img = fig_to_array(explanation_fig)
