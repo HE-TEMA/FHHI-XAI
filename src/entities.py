@@ -68,6 +68,7 @@ def get_person_vehicle_detection_explanation_entity(
     original_image_filename,
     original_detection_boxes,
     original_detection_class_categories,
+    original_detection_confidences,
     explanation_boxes,
     n_concepts,
     n_refimgs,
@@ -83,6 +84,7 @@ def get_person_vehicle_detection_explanation_entity(
     template["original_image"]["value"]["filename"] = original_image_filename
     template["original_detection"]["value"]["boxes"] = original_detection_boxes
     template["original_detection"]["value"]["class_categories"] = original_detection_class_categories
+    template["original_detection"]["value"]["confidences"] = original_detection_confidences
     template["explanation"]["value"]["boxes"] = explanation_boxes
     template["explanation"]["value"]["parameters"]["n_concepts"] = n_concepts
     template["explanation"]["value"]["parameters"]["n_refimgs"] = n_refimgs

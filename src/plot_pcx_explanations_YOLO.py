@@ -87,10 +87,43 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
     return ref_imgs
 
 
-def plot_pcx_explanations(device, class_id, model_name, model, dataset, sample_id=0, n_concepts=5, n_refimgs=12,
-                          num_prototypes={0: 0, 1: 0}, prediction_num=0,
-                          layer_name="decoder.center.0.0", ref_imgs_path="output/ref_imgs/",
-                          output_dir_pcx="output/pcx/yolo_person_car", output_dir_crp="output/crp/yolo_person_car/"):
+def plot_pcx_explanations(
+        class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
+    ):
+    img, t = dataset[sample_id]
+
+
+    fig = plot_one_image_pcx_explanation(
+        class_id, model_name, model, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
+    )
+    plt.figure(fig)
+
+    plt.tight_layout()
+
+    plot_dir = "output/pcx/pcx_plots"
+    os.makedirs(plot_dir, exist_ok=True)
+
+    safe_layer = layer_name.replace('.', '_')
+    fname = (
+        f"pcx_class{class_id}"
+        f"_layer{safe_layer}"
+        f"_sample{sample_id}"
+        f"_n_prot{num_prototypes}"
+        f"_nconc{n_concepts}.png"
+    )
+    fullpath = os.path.join(plot_dir, fname)
+
+    # save plot
+    fig.savefig(fullpath, dpi=200, bbox_inches='tight')
+    plt.show()
+    plt.close(fig)
+
+
+def plot_one_image_pcx_explanation(
+        class_id, model_name, model, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
+    ):
+    # Set device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     # Model has to be in eval state
     model.eval()
     model.to(device)
@@ -389,22 +422,5 @@ def plot_pcx_explanations(device, class_id, model_name, model, dataset, sample_i
 
             ax.set_xticks([]); ax.set_yticks([])
 
-    plt.tight_layout()
-
-    plot_dir = "output/pcx/pcx_plots"
-    os.makedirs(plot_dir, exist_ok=True)
-
-    safe_layer = layer_name.replace('.', '_')
-    fname = (
-        f"pcx_class{class_id}"
-        f"_layer{safe_layer}"
-        f"_sample{sample_id}"
-        f"_n_prot{num_prototypes}"
-        f"_nconc{n_concepts}.png"
-    )
-    fullpath = os.path.join(plot_dir, fname)
-
-    # save plot
-    fig.savefig(fullpath, dpi=200, bbox_inches='tight')
-    plt.show()
-    plt.close(fig)
+    return fig
+   

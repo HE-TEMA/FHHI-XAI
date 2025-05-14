@@ -36,7 +36,7 @@ logging.getLogger('PIL').setLevel(logging.INFO)
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
 # Get base path from environment variable
-BASE_PATH = os.environ.get('BASE_PATH', '/')
+BASE_PATH = os.environ.get('BASE_PATH', '/tfa02')
 
 
 def get_minio_client():
@@ -167,7 +167,7 @@ def requeue_tasks():
                     job = job_queue.enqueue(
                         process_image_task,
                         entity_type, 
-                        minimal_entity, 
+                        # minimal_entity, 
                         src_image_bucket, 
                         minio_filename,
                         task_id,
@@ -197,27 +197,27 @@ def requeue_tasks():
 
 # Route for the GET request
 @app.route(f'{BASE_PATH}/get_data', methods=['GET'])
-def get_data(): 
-    try: 
+def get_data():
+    try:
         app.logger.debug('GET request received.')
         # Logic to retrieve data would go here
-        return jsonify({'message': 'Welcome! This is a sample service.'}) 
-    except Exception as e:  
-        app.logger.error(f'Error in GET request: {str(e)}')  
+        return jsonify({'message': 'Welcome! This is a sample service.'})
+    except Exception as e: 
+        app.logger.error(f'Error in GET request: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 
 # POST route to enqueue tasks instead of processing immediately
-@app.route(f'{BASE_PATH}/post_data', methods=['POST']) 
+@app.route(f'{BASE_PATH}/post_data', methods=['POST'])
 def post_data():
     try: 
-        app.logger.debug('POST request received.') 
-        raw_data = request.get_json() 
+        app.logger.debug('POST request received.')
+        raw_data = request.get_json()
         app.logger.debug(f'Raw data received: {raw_data}')
 
         outer_entity_type = raw_data.get('type')
         if outer_entity_type is None:
-            err_msg = f'Entity type not provided.'
+            err_msg = 'Entity type not provided.'
             app.logger.error(err_msg)
             return jsonify({'error': err_msg}), 400
         
@@ -252,13 +252,12 @@ def post_data():
         if posted_bm_id != current_bm_id:
             app.logger.warning(f"Received bm_id: {posted_bm_id} does not match current bm_id: {current_bm_id}")
 
-
         src_image_filename = entity["filename"]["value"]
         src_image_bucket = entity["bucket"]["value"]
         
         # Submit tasks for both PersonVehicleDetection and FloodSegmentation
-        # entities_to_explain = ['PersonVehicleDetection', 'FloodSegmentation']
-        entities_to_explain = ['FloodSegmentation', 'PersonVehicleDetection']
+        entities_to_explain = ['PersonVehicleDetection']
+        # entities_to_explain = ['FloodSegmentation', 'PersonVehicleDetection']
         
         task_ids = []
         for entity_type in entities_to_explain:
@@ -279,8 +278,8 @@ def post_data():
             # Enqueue the task
             job = job_queue.enqueue(
                 process_image_task,
-                entity_type, 
-                src_image_bucket, 
+                entity_type,
+                src_image_bucket,
                 src_image_filename,
                 task_id,
                 job_timeout='12h'  # Set an appropriate timeout
@@ -489,7 +488,7 @@ def subscribe_to_context_broker():
             headers={'Content-Type': 'application/json'},
             json=subscription_payload
         )
-        
+ 
         status_map = {
             201: {'message': 'Subscription created successfully.'},
             204: {'message': 'Subscription updated successfully.'},
@@ -499,10 +498,10 @@ def subscribe_to_context_broker():
             422: {'error': 'Unprocessable Entity - Invalid subscription payload.'},
             'default': {'error': f'Unexpected response from Orion Context Broker: {create_response.status_code}'}
         }
-        
+
         response_info = status_map.get(create_response.status_code, status_map['default'])
         app.logger.info(f'Subscription response: {create_response.status_code} - {response_info}')
-        
+ 
         if create_response.status_code in [201, 204]:
             return jsonify(response_info), create_response.status_code
         else:
@@ -514,8 +513,7 @@ def subscribe_to_context_broker():
         return jsonify({'error': str(e)}), 500
 
 
-
 # Run the Flask application
 if __name__ == '__main__':
     debug = os.environ.get('DEBUG', '').lower() in ('true', '1')
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT')), debug=debug)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=debug)
