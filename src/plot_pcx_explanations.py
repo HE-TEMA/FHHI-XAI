@@ -108,7 +108,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
     # Getting the sample we selected
     data, _ = fv.get_data_sample(sample_id, preprocessing=False)    
 
-    # Loading relevances for this layer  
+    # Loading relevances for this layer,
     folder = f"{output_dir_pcx}/{layer_name}/"
     attributions = torch.from_numpy(np.load(folder + "attributions.npy"))
 
@@ -152,6 +152,10 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
     mean = gmm.means_[np.argmax(likelihoods)]
     mean = torch.from_numpy(mean)
     closest_sample_to_mean = ((attributions - mean[None])).pow(2).sum(dim=1).argmin().item()
+
+
+    #saving stuff
+    joblib.dump((attributions, gmm, channel_rels, mean), "output/pcx/gmm_data.pkl")
 
     # Closest prototype
     data_p, target_p = dataset[closest_sample_to_mean]
@@ -316,6 +320,8 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
 
     plt.show()
 
+    return gmm, mean, channel_rels
+
 
 
 def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="output/pcx/unet_flood/"):  #automate the task of finding outlier samples
@@ -368,6 +374,11 @@ def plot_gmm_3d_interactive(attributions: np.ndarray,
                             sample_id: int = 0,
                             layer_name: str = 'layer',
                             split="train"):
+    
+
+
+
+
     # pick top-3 dims by default
     if three_d_dims is None:
         three_d_dims = list(np.argsort(np.abs(mean.detach().cpu().numpy()))[::-1][:3])
