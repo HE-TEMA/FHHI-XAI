@@ -31,6 +31,7 @@ import torchvision.transforms.functional as F
 from matplotlib.font_manager import FontProperties
 import matplotlib.patches as patches
 import joblib
+import plotly.graph_objects as go
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -84,6 +85,8 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_
                         print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
 
     return ref_imgs
+
+
 
 def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n_refimgs=12, num_prototypes=2, layer_name="decoder.center.0.0", ref_imgs_path="output/ref_imgs/", output_dir_pcx="output/pcx/unet_flood/", output_dir_crp="output/crp/unet_flood_old/"):
     # Model has to be in eval state
@@ -243,7 +246,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
                     bold_font = FontProperties(weight='bold')
 
                     if r == 0:
-                        ax.set_title("Difference to prototype")
+                        ax.set_title("Difference to prot.")
                     ax.imshow(np.zeros((150, 150, 3)), alpha=0.2, cmap=None)
                     delta_R = (channel_rels[0][topk_ind[r]].round(decimals=3) - mean[topk_ind[r]].round(decimals=3)) * 100
                     if delta_R > 2:
@@ -289,7 +292,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
                         ax.axis("off")
                 elif c == 4:
                     if r == 0:
-                        ax.set_title("Prototype localization")
+                        ax.set_title("Prot localization")
                     ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True))
                     ax.yaxis.set_label_position("right")
 
@@ -301,14 +304,126 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
             ax.set_yticks([])
 
     # add horizontal line
-    ax.plot([1/6, 5/6], [2/5 - 0.01, 2/5 - 0.01], color='lightgray', lw=1.5, ls="--",
-            transform=plt.gcf().transFigure, clip_on=False)
-    ax.text(5/6, 2/5 - 0.008, "concepts sorted by $|R|$", transform=plt.gcf().transFigure, fontsize=10,
-            verticalalignment='bottom', ha="right", clip_on=False, in_layout=False, color="gray")
-    ax.text(5/6, 2/5 - 0.013, "remaining concepts sorted by $|\\Delta R|$", transform=plt.gcf().transFigure, fontsize=10,
-            verticalalignment='top', ha="right", clip_on=False, in_layout=False, color="gray")
+    #ax.plot([1/6, 5/6], [2/5 - 0.01, 2/5 - 0.01], color='lightgray', lw=1.5, ls="--",
+    #        transform=plt.gcf().transFigure, clip_on=False)
+    #ax.text(5/6, 2/5 - 0.008, "concepts sorted by $|R|$", transform=plt.gcf().transFigure, fontsize=10,
+    #        verticalalignment='bottom', ha="right", clip_on=False, in_layout=False, color="gray")
+    #ax.text(5/6, 2/5 - 0.013, "remaining concepts sorted by $|\\Delta R|$", transform=plt.gcf().transFigure, fontsize=10,
+    #        verticalalignment='top', ha="right", clip_on=False, in_layout=False, color="gray")
 
     # Save and show the generated figures.
     plt.tight_layout()
 
     plt.show()
+
+
+
+def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="output/pcx/unet_flood/"):  #automate the task of finding outlier samples
+
+    #setting model to eval state
+    model.eval()
+    layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
+
+    #Setting up for CRP
+    attribution = ATTRIBUTORS[model_name](model)
+    composite = COMPOSITES[model_name](canonizers=[CANONIZERS[model_name]()])
+
+    fv = VISUALIZATIONS[model_name](attribution, dataset, layer_names,
+                                     preprocess_fn=lambda x: x,
+                                     path=output_dir_pcx,
+                                     max_target="max")
+
+    # Load or compute the GMM
+    folder = f"{output_dir_pcx}/{layer_name}/"
+    attributions = torch.from_numpy(np.load(folder + "attributions.npy"))
+    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
+
+    if os.path.exists(cache_path):
+        gmm = joblib.load(cache_path)
+    else:
+        gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions)
+        joblib.dump(gmm, cache_path)
+
+    #log-likelihood scores
+    scores = gmm.score_samples(attributions)
+
+    # Define outlier thresholds (e.g., 1st and 99th percentiles)
+    lower_threshold = np.percentile(scores, 1)
+    upper_threshold = np.percentile(scores, 99)
+
+    # Get outlier indices
+    outliers = [i for i, score in enumerate(scores)
+                if score < lower_threshold or score > upper_threshold]
+
+    return outliers, scores, lower_threshold, upper_threshold
+
+
+
+def plot_gmm_3d_interactive(attributions: np.ndarray,
+                            gmm: GaussianMixture,
+                            channel_rels: torch.Tensor,
+                            mean: torch.Tensor,
+                            three_d_dims: list = None,
+                            class_id: int = 0,
+                            sample_id: int = 0,
+                            layer_name: str = 'layer',
+                            split="train"):
+    # pick top-3 dims by default
+    if three_d_dims is None:
+        three_d_dims = list(np.argsort(np.abs(mean.detach().cpu().numpy()))[::-1][:3])
+    X = attributions[:, three_d_dims]
+    labels = gmm.predict(attributions)
+    
+    # input point
+    inp = channel_rels[0, three_d_dims].detach().cpu().numpy()
+
+    # build traces
+    fig = go.Figure()
+
+    # one trace per cluster, now with sample IDs
+    for lbl in np.unique(labels):
+        # get the integer indices of all points in this cluster
+        idxs = np.where(labels == lbl)[0]
+        fig.add_trace(go.Scatter3d(
+            x=X[idxs, 0], y=X[idxs, 1], z=X[idxs, 2],
+            mode='markers',                    # show both marker and text
+            marker=dict(size=4),
+            text=[str(i) for i in idxs],            # always-on text labels
+            textposition='top center',
+            hoverinfo='none',                       # turn off default hover if you like
+            name=f'cluster {lbl}'
+        ))
+
+
+    # prototypes
+    for p, prot_vec in enumerate(gmm.means_):
+        coords = prot_vec[three_d_dims]
+        fig.add_trace(go.Scatter3d(
+            x=[coords[0]], y=[coords[1]], z=[coords[2]],
+            mode='markers+text',
+            marker=dict(symbol='diamond', size=8),
+            text=[str(p)],
+            textposition='top center',
+            name=f'prototype {p}'
+        ))
+
+    # input point
+    fig.add_trace(go.Scatter3d(
+        x=[inp[0]], y=[inp[1]], z=[inp[2]],
+        mode='markers',
+        marker=dict(symbol='square', size=5, color='white'),
+        name=f'input_{split}_{sample_id}'
+    ))
+
+    fig.update_layout(
+        scene = dict(
+            xaxis_title=f'Dim {three_d_dims[0]}',
+            yaxis_title=f'Dim {three_d_dims[1]}',
+            zaxis_title=f'Dim {three_d_dims[2]}',
+            aspectmode='cube'
+        ),
+        title=f'Interactive GMM Clusters (n={gmm.n_components}) — layer {layer_name}',
+        legend=dict(font=dict(size=10))
+    )
+
+    return fig
