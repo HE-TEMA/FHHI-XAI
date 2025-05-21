@@ -207,8 +207,48 @@ def plot_one_image_pcx_explanation(
     attribution.take_prediction = prediction_num
     cond_heatmap, _, _, _ = attribution(data.requires_grad_(), conditions, composite, exclude_parallel=True)
     print(f"Running conditional attribution on the input image, {attribution.take_prediction}")
-    attribution.take_prediction = 0
-    cond_heatmap_p, _, _, _ = attribution(data_p.requires_grad_(), conditions, composite, exclude_parallel=True)
+
+    # ─── define cache dir & files ────────────────────────────────
+    cache_dir = os.path.join(output_dir_pcx, "cache", layer_name, f"class_{class_id}_protos_{num_prototypes}")
+    os.makedirs(cache_dir, exist_ok=True)
+    heatmap_cache = os.path.join(cache_dir, f"attr_p_heatmap_protos{num_prototypes}.npy")
+    cond_cache = os.path.join(cache_dir, f"cond_heatmap_p_protos{num_prototypes}.npy")
+
+    # ─── load or compute & cache raw heatmap arrays ────────────────
+    if os.path.exists(heatmap_cache) and os.path.exists(cond_cache):
+        # load back into torch
+        attr_p_heatmap = torch.from_numpy(np.load(heatmap_cache))
+        cond_heatmap_p = torch.from_numpy(np.load(cond_cache))
+        print("Loaded prototype heatmaps from cache")
+    else:
+        # compute them fresh
+        attribution.take_prediction = 0
+        cond_heatmap_p, _, _, _ = attribution(
+            data_p.requires_grad_(),
+            conditions,
+            composite,
+            exclude_parallel=True
+        )
+        attribution.take_prediction = 0
+        attr_p = attribution(
+            data_p.requires_grad_(),
+            condition,
+            composite,
+            record_layer=[layer_name],
+            init_rel=1
+        )
+
+        # detach → CPU → numpy
+        heatmap_p_tensor      = attr_p.heatmap.detach().cpu()
+        cond_heatmap_p_tensor = cond_heatmap_p.detach().cpu()
+
+        # save as .npy
+        np.save(heatmap_cache,      heatmap_p_tensor.numpy())
+        np.save(cond_cache,         cond_heatmap_p_tensor.numpy())
+        attr_p_heatmap = heatmap_p_tensor
+
+        print("Saved prototype heatmaps to cache")
+
 
     # This was here previously
     # predicted_boxes = model.predict_with_boxes(data)[1][0]
@@ -266,10 +306,6 @@ def plot_one_image_pcx_explanation(
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
     draw.rectangle(adjusted_box, outline="yellow", width=1)
 
-
-
-    attribution.take_prediction = 0
-    attr_p = attribution(data_p.requires_grad_(), condition, composite, record_layer=[layer_name], init_rel=1)
 
     # This was here previously
     # predicted_boxes = model.predict_with_boxes(data_p)[1][0]
@@ -379,7 +415,7 @@ def plot_one_image_pcx_explanation(
             # --- col 1: input localization ---
             elif c == 1:
                 ax.imshow(imgify(cond_heatmap[r],
-                                 symmetric=True, cmap="bwr", padding=True))
+                                 symmetric=True, cmap="bwr", padding=True, level=3))
                 ax.set_ylabel(f"concept {topk_ind[r]}\n"
                               f"relevance: {channel_rels[0,topk_ind[r]]*100:2.1f}")
                 if r == 0:
@@ -423,7 +459,7 @@ def plot_one_image_pcx_explanation(
             # --- col 4: proto localization ---
             elif c == 4:
                 ax.imshow(imgify(cond_heatmap_p[r],
-                                 symmetric=True, cmap="bwr", padding=True))
+                                 symmetric=True, cmap="bwr", padding=True, level=3))
                 ax.set_ylabel(f"concept {topk_ind[r]}\n"
                               f"relevance: {mean[topk_ind[r]]*100:2.1f}")
                 if r == 0:
@@ -436,8 +472,8 @@ def plot_one_image_pcx_explanation(
                     ax.imshow(img_prototype)
                 elif r == 1:
                     ax.set_title("heatmap")
-                    ax.imshow(imgify(attr_p.heatmap,
-                                     cmap="bwr", symmetric=True))
+                    ax.imshow(imgify(attr_p_heatmap,
+                                     cmap="bwr", symmetric=True, level=3))
                 elif r == 2:
                     ax.set_title("detection")
                     ax.imshow(cropped_img_prot)
