@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use('Agg')
 import copy
 import logging
+from contextlib import contextmanager
 
 
 
@@ -19,7 +20,6 @@ from src.datasets.flood_dataset import FloodDataset
 from src.entities import get_person_vehicle_detection_explanation_entity, get_flood_segmentation_explanation_entity
 from src.minio_client import FHHI_MINIO_BUCKET
 from src.memory_logging import log_cuda_memory
-
 
 
 class Explanator:
@@ -59,8 +59,56 @@ class Explanator:
 
         self.VALID_ENTITY_TYPES = list(self.entity_handlers.keys())
         self.DLR_ENTITY_TYPES = {"EOBurntArea", "EOFloodExtent"}
-   
 
+        self.running_avg_forward_time = 0
+        self.forward_count = 0
+        self.running_avg_backward_time = 0
+        self.backward_count = 0
+
+    @property 
+    def prediction_times(self):
+        """Returns the average forward and backward pass times."""
+        return {
+            "forward": f"{self.running_avg_forward_time:.3f} ms",
+            "backward": f"{self.running_avg_backward_time:.3f} ms",
+        }
+
+    @contextmanager
+    def record_forward_time(self):
+        """Context manager to record the time taken for a forward pass."""
+        if self.device == "cuda" and torch.cuda.is_available():
+            self.logger.debug("Using CUDA for timing")
+            try:
+                # Try using CUDA events for timing on GPU
+                start_time = torch.cuda.Event(enable_timing=True)
+                end_time = torch.cuda.Event(enable_timing=True)
+                start_time.record()
+                yield
+                end_time.record()
+                # Wait for the events to be recorded
+                torch.cuda.synchronize()
+                elapsed_time = start_time.elapsed_time(end_time)
+            except (TypeError, RuntimeError):
+                # Fall back to time.time() if CUDA events fail
+                import time
+                start_time = time.time()
+                yield
+                elapsed_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+        else:
+            self.logger.debug("Using CPU for timing")
+            print()
+            # Use time.time() for timing on CPU
+            import time
+            start_time = time.time()
+            yield
+            elapsed_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+        
+        # The formula for the running average is:
+        # new_average = old_average + (new_value - old_average) / new_count
+        self.forward_count += 1
+        self.running_avg_forward_time += (elapsed_time - self.running_avg_forward_time) / self.forward_count
+        self.logger.debug(f"Forward pass time: {elapsed_time:.2f} ms")
+        self.logger.debug(f"Running average forward pass time: {self.running_avg_forward_time:.2f} ms")
 
     def explain(self, entity_type: str, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         """Generate explanation for the given entity type and image."""
@@ -234,7 +282,10 @@ class Explanator:
         test_img = self.person_car_dataset.transform(image)
         test_img = test_img.unsqueeze(0)
 
-        scores, boxes = self.person_vehicle_model.predict_with_boxes(test_img)
+        test_img = test_img.to(self.device)
+
+        with self.record_forward_time():
+            scores, boxes = self.person_vehicle_model.predict_with_boxes(test_img)
         num_boxes = boxes.shape[1]
         self.logger.debug(f"Number of boxes: {num_boxes}")
 
@@ -252,6 +303,7 @@ class Explanator:
         
         explanation_boxes = []
         for prediction_num in range(num_boxes):
+
             exp_box = {}
 
             exp_box["object_id"] = prediction_num

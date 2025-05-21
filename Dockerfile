@@ -7,6 +7,9 @@ FROM python:3.8.12-slim AS builder
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    # Therse two are for h5py
+    pkg-config \
+    libhdf5-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
