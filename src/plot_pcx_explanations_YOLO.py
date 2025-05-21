@@ -175,6 +175,7 @@ def plot_one_image_pcx_explanation(
 
     # Running attribution on the input image
     attribution.take_prediction = prediction_num
+    print(f"Running attribution on the input image, {attribution.take_prediction}") 
     attr = attribution(data.requires_grad_(), condition, composite, record_layer=[layer_name],
                        init_rel=1)
 
@@ -205,16 +206,32 @@ def plot_one_image_pcx_explanation(
 
     attribution.take_prediction = prediction_num
     cond_heatmap, _, _, _ = attribution(data.requires_grad_(), conditions, composite, exclude_parallel=True)
+    print(f"Running conditional attribution on the input image, {attribution.take_prediction}")
+    attribution.take_prediction = 0
     cond_heatmap_p, _, _, _ = attribution(data_p.requires_grad_(), conditions, composite, exclude_parallel=True)
 
-    predicted_boxes = model.predict_with_boxes(data)[1][0]
-    predicted_classes = attr.prediction.argmax(dim=2)[0]
-    sorted = attr.prediction.max(dim=2)[0].argsort(descending=True)[0]
-    predicted_classes = predicted_classes[sorted]
-    predicted_boxes = predicted_boxes[sorted]
-    # Filter boxes for the d esired class.
-    filtered_boxes = [b for b, c in zip(predicted_boxes, predicted_classes) if c == class_id]
-    predicted_boxes = filtered_boxes[prediction_num]
+    # This was here previously
+    # predicted_boxes = model.predict_with_boxes(data)[1][0]
+    # Rewriting for clarity
+    _, batch_predicted_boxes = model.predict_with_boxes(data)
+    sample_predicted_boxes = batch_predicted_boxes[0]
+
+    # This is already predicted as class_id
+    predicted_boxes = sample_predicted_boxes[prediction_num]
+
+    # predicted_classes = attr.prediction.argmax(dim=2)[0]
+    # sorted = attr.prediction.max(dim=2)[0].argsort(descending=True)[0]
+    # predicted_classes = predicted_classes[sorted]
+    # predicted_boxes = predicted_boxes[sorted]
+    # # Filter boxes for the d esired class.
+    # filtered_boxes = [b for b, c in zip(predicted_boxes, predicted_classes) if c == class_id]
+
+    # try:
+    #     predicted_boxes = filtered_boxes[prediction_num]
+    # except IndexError:
+    #     print(f"Warning: No bounding box found for class {class_id} at index {prediction_num}.")
+    #     raise IndexError(f"No bounding box found for class {class_id} at index {prediction_num}.")
+
     boxes = predicted_boxes.clone().detach().float()[None]
     colors = ["#ffcc00" for _ in boxes]
     result = draw_bounding_boxes((dataset.reverse_normalization(data[0])).type(torch.uint8),
@@ -249,17 +266,29 @@ def plot_one_image_pcx_explanation(
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
     draw.rectangle(adjusted_box, outline="yellow", width=1)
 
-    attribution.take_prediction = prediction_num
+
+
+    attribution.take_prediction = 0
     attr_p = attribution(data_p.requires_grad_(), condition, composite, record_layer=[layer_name], init_rel=1)
 
-    predicted_boxes = model.predict_with_boxes(data_p)[1][0]
-    predicted_classes = attr_p.prediction.argmax(dim=2)[0]
-    sorted = attr_p.prediction.max(dim=2)[0].argsort(descending=True)[0]
-    predicted_classes = predicted_classes[sorted]
-    predicted_boxes = predicted_boxes[sorted]
-    # Filter boxes for the d esired class.
-    filtered_boxes = [b for b, c in zip(predicted_boxes, predicted_classes) if c == class_id]
-    predicted_boxes = filtered_boxes[prediction_num]
+    # This was here previously
+    # predicted_boxes = model.predict_with_boxes(data_p)[1][0]
+    # Rewriting for clarity
+    _, batch_predicted_boxes = model.predict_with_boxes(data_p)
+    sample_predicted_boxes = batch_predicted_boxes[0]
+    predicted_boxes = sample_predicted_boxes[0]
+
+    # predicted_classes = attr_p.prediction.argmax(dim=2)[0]
+    # print(f"Predicted boxes: {predicted_boxes}")
+    # print(f"Predicted boxes shape: {predicted_boxes.shape}")
+
+    # sorted = attr_p.prediction.max(dim=2)[0].argsort(descending=True)[0]
+    # predicted_classes = predicted_classes[sorted]
+    # predicted_boxes = predicted_boxes[sorted]
+    # # Filter boxes for the d esired class.
+    # filtered_boxes = [b for b, c in zip(predicted_boxes, predicted_classes) if c == class_id]
+    # predicted_boxes = filtered_boxes[prediction_num]
+
     boxes = predicted_boxes.clone().detach().float()[None]
     colors = ["#ffcc00" for _ in boxes]
     result = draw_bounding_boxes((dataset.reverse_normalization(data_p[0])).type(torch.uint8),
