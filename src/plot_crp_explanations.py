@@ -129,7 +129,8 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
         colors = ["#ffcc00" for _ in boxes]
         
         result = draw_bounding_boxes((dataset.reverse_normalization(img[0])).type(torch.uint8),
-                                   boxes, colors=colors, width=8)
+            boxes, colors=colors, width=8
+        )
         
         img_ = F.to_pil_image(result)
         attribution.take_prediction = 0

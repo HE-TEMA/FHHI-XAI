@@ -3,6 +3,7 @@
     "type": "Notification",
     "subscriptionId": "urn:ngsi-ld:Subscription:tfa02:001",
     "notifiedAt": "2025-03-19T12:05:33.291Z",
+    "bm_id": "test_bm",
     "data": [
         {
             "id": "urn:ngsi-ld:tema:AUTH:TFA-06:FloodSegmentation",
