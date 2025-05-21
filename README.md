@@ -94,6 +94,8 @@ DEBUG=1 will make the app reload on any code changes, remove if you don't want t
 ```bash
 python worker.py
 ```
+For the worker to work properly on a Mac, before running it do `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`.
+```bash
 
 The application will be available at `http://localhost:8080/tfa02` by default.
 

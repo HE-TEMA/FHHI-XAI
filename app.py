@@ -16,7 +16,7 @@ import time
 from src.explanator import Explanator
 from src.minio_client import MinIOClient, FHHI_MINIO_BUCKET, NAPLES_MINIO_BUCKET
 from common_app_funcs import update_entity, get_bm_id, set_bm_id, update_job_status, get_job_status, get_redis_conn, get_job_queue
-from tasks import process_image_task
+from tasks import process_image_task, explanator
 
 
 # Set up Redis connection and queue
