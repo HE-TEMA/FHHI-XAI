@@ -94,8 +94,10 @@ DEBUG=1 will make the app reload on any code changes, remove if you don't want t
 ```bash
 python worker.py
 ```
-For the worker to work properly on a Mac, before running it do `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`.
+For the worker to work properly on a Mac, before running it do 
 ```bash
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`.
+```
 
 The application will be available at `http://localhost:8080/tfa02` by default.
 
@@ -103,16 +105,20 @@ Note: For production deployment, use the Docker container as described in the "R
 
 ### Testing
 
-You can test the application using the provided test script located in the `tests/` folder. There are two ways to run the tests:
+You can test the application using the provided test script located in the `tests/` folder. 
+```bash
+cd tests
+```
 
+There are two ways to run the tests:
 1. Local testing (sends notifications to local Redis):
 ```bash
-python tests/test_post_data.py ImageMetadata
+python test_post_data.py ImageMetadata
 ```
 
 2. Cloud testing (sends notifications to TEMA cloud):
 ```bash
-python tests/test_post_data.py ImageMetadata --cloud
+python test_post_data.py ImageMetadata --cloud
 ```
 
 The test script will send sample image metadata to the application and you should see the processing results in the logs of both the Flask application and the worker process.

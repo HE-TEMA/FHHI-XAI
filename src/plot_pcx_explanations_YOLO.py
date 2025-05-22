@@ -5,6 +5,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 # Add the parent directory to the Python path - bad practice, but it's just for the example
 import sys
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 sys.path.append("..")
 #from src.minio_client import MinIOClient
@@ -175,7 +179,7 @@ def plot_one_image_pcx_explanation(
 
     # Running attribution on the input image
     attribution.take_prediction = prediction_num
-    print(f"Running attribution on the input image, {attribution.take_prediction}") 
+    logger.debug(f"Running attribution on the input image, {attribution.take_prediction}") 
     attr = attribution(data.requires_grad_(), condition, composite, record_layer=[layer_name],
                        init_rel=1)
 
@@ -206,7 +210,7 @@ def plot_one_image_pcx_explanation(
 
     attribution.take_prediction = prediction_num
     cond_heatmap, _, _, _ = attribution(data.requires_grad_(), conditions, composite, exclude_parallel=True)
-    print(f"Running conditional attribution on the input image, {attribution.take_prediction}")
+    logger.debug(f"Running conditional attribution on the input image, {attribution.take_prediction}")
 
     # ─── define cache dir & files ────────────────────────────────
     cache_dir = os.path.join(output_dir_pcx, "cache", layer_name, f"class_{class_id}_protos_{num_prototypes}")
@@ -217,10 +221,12 @@ def plot_one_image_pcx_explanation(
     # ─── load or compute & cache raw heatmap arrays ────────────────
     if os.path.exists(heatmap_cache) and os.path.exists(cond_cache):
         # load back into torch
+        logger.debug("Loading prototype heatmaps from cache")
         attr_p_heatmap = torch.from_numpy(np.load(heatmap_cache))
         cond_heatmap_p = torch.from_numpy(np.load(cond_cache))
-        print("Loaded prototype heatmaps from cache")
+        logger.debug("Loaded prototype heatmaps from cache")
     else:
+        logger.debug("Cache not found, computing fresh")
         # compute them fresh
         attribution.take_prediction = 0
         cond_heatmap_p, _, _, _ = attribution(
@@ -305,7 +311,6 @@ def plot_one_image_pcx_explanation(
     draw = ImageDraw.Draw(cropped_img)
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
     draw.rectangle(adjusted_box, outline="yellow", width=1)
-
 
     # This was here previously
     # predicted_boxes = model.predict_with_boxes(data_p)[1][0]
