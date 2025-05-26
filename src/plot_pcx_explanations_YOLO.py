@@ -8,7 +8,7 @@ import sys
 import logging
 
 # Configure logging to display debug information
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Ensure parent directory is in path
@@ -64,7 +64,12 @@ def plot_pcx_explanations(
 
 def plot_one_image_pcx_explanation(
     model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
-        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=False):
+        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=False, outside_logger=None
+):
+
+    if outside_logger:
+        logger = outside_logger
+
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Model has to be in eval state
@@ -216,7 +221,7 @@ def plot_one_image_pcx_explanation(
         np.save(cond_cache,         cond_heatmap_p_tensor.numpy())
         attr_p_heatmap = heatmap_p_tensor
 
-        print("Saved prototype heatmaps to cache")
+        logger.debug("Saved prototype heatmaps to cache")
 
 
     # This was here previously

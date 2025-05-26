@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
     libxext6 \
+    libhdf5-103 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/log/supervisor /var/lib/redis \
     && chown -R redis:redis /var/lib/redis \

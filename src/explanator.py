@@ -336,6 +336,7 @@ class Explanator:
                 ref_imgs_path=ref_imgs_path,
                 output_dir_pcx=pcx_output_dir,
                 output_dir_crp=crp_output_dir,
+                outside_logger=self.logger,
             )
             
             explanation_img = fig_to_array(explanation_fig)
