@@ -7,10 +7,15 @@ import matplotlib.pyplot as plt
 import sys
 import logging
 
+# Configure logging to display debug information
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Ensure parent directory is in path
 sys.path.append("..")
+
+# Helper imports for PCX and CRP explanations
+
 #from src.minio_client import MinIOClient
 from crp.helper import get_layer_names
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
@@ -20,7 +25,6 @@ from LCRP.utils.render import vis_opaque_img_border
 from crp.image import imgify
 from torchvision.utils import draw_bounding_boxes, make_grid
 import torchvision.transforms.functional as F
-
 from matplotlib.font_manager import FontProperties
 import matplotlib.patches as patches
 import joblib
@@ -30,18 +34,20 @@ from src.pcx_helper import get_ref_images
 def plot_pcx_explanations(
     class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
         ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=False):
+
+    # Load the input image and label
     img, t = dataset[sample_id]
 
+    # Generate the explanation figure
     fig = plot_one_image_pcx_explanation(
         model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
         ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=use_half)
+
+    # Display and save the plot
     plt.figure(fig)
-
     plt.tight_layout()
-
     plot_dir = "output/pcx/pcx_plots"
     os.makedirs(plot_dir, exist_ok=True)
-
     safe_layer = layer_name.replace('.', '_')
     fname = (
         f"pcx_class{class_id}"
@@ -51,8 +57,6 @@ def plot_pcx_explanations(
         f"_nconc{n_concepts}.png"
     )
     fullpath = os.path.join(plot_dir, fname)
-
-    # save plot
     fig.savefig(fullpath, dpi=200, bbox_inches='tight')
     plt.show()
     plt.close(fig)
@@ -66,10 +70,10 @@ def plot_one_image_pcx_explanation(
     # Model has to be in eval state
     model.to(device)
     model.eval()
-
     if use_half:
         model.half()
 
+    # Prepare layer names for CRP attribution
     layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
     num_prototypes = num_prototypes[class_id]
 
@@ -218,7 +222,8 @@ def plot_one_image_pcx_explanation(
     # This was here previously
     # predicted_boxes = model.predict_with_boxes(data)[1][0]
     # Rewriting for clarity
-    _, batch_predicted_boxes = model.predict_with_boxes(data)
+    input_scores, batch_predicted_boxes = model.predict_with_boxes(data)
+    pred_confidence = input_scores[0, prediction_num, class_id].item()
     sample_predicted_boxes = batch_predicted_boxes[0]
 
     # This is already predicted as class_id
@@ -228,7 +233,7 @@ def plot_one_image_pcx_explanation(
     # sorted = attr.prediction.max(dim=2)[0].argsort(descending=True)[0]
     # predicted_classes = predicted_classes[sorted]
     # predicted_boxes = predicted_boxes[sorted]
-    # # Filter boxes for the d esired class.
+    # # Filter boxes for the desired class.
     # filtered_boxes = [b for b, c in zip(predicted_boxes, predicted_classes) if c == class_id]
 
     # try:
@@ -237,6 +242,7 @@ def plot_one_image_pcx_explanation(
     #     print(f"Warning: No bounding box found for class {class_id} at index {prediction_num}.")
     #     raise IndexError(f"No bounding box found for class {class_id} at index {prediction_num}.")
 
+    pred_label = dataset.class_names[class_id]
     boxes = predicted_boxes.clone().detach().float()[None]
     colors = ["#ffcc00" for _ in boxes]
     result = draw_bounding_boxes((dataset.reverse_normalization(data[0])).type(torch.uint8),
@@ -255,7 +261,7 @@ def plot_one_image_pcx_explanation(
     box_width = x_max - x_min
     box_height = y_max - y_min
     # choose zoom factor based on class
-    zoom_factor = 0.2 if class_id == 1 else 2.0
+    zoom_factor = 0.4 if class_id == 1 else 2.0
     # compute margin
     margin_x = int(zoom_factor * box_width)
     margin_y = int(zoom_factor * box_height)
@@ -269,7 +275,7 @@ def plot_one_image_pcx_explanation(
     # Draw the original bounding box (adjusted to the cropped image coordinates) with a thinner outline.
     draw = ImageDraw.Draw(cropped_img)
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
-    draw.rectangle(adjusted_box, outline="yellow", width=1)
+    draw.rectangle(adjusted_box, outline="yellow", width=2)
 
     # This was here previously
     # predicted_boxes = model.predict_with_boxes(data_p)[1][0]
@@ -307,7 +313,7 @@ def plot_one_image_pcx_explanation(
     box_width = x_max - x_min
     box_height = y_max - y_min
     # choose zoom factor based on class
-    zoom_factor = 0.2 if class_id == 1 else 2.0
+    zoom_factor = 0.4 if class_id == 1 else 2.0
     # compute margin
     margin_x = int(zoom_factor * box_width)
     margin_y = int(zoom_factor * box_height)
@@ -321,7 +327,7 @@ def plot_one_image_pcx_explanation(
     # Draw the original bounding box (adjusted to the cropped image coordinates) with a thinner outline.
     draw = ImageDraw.Draw(cropped_img_prot)
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
-    draw.rectangle(adjusted_box, outline="yellow", width=1)
+    draw.rectangle(adjusted_box, outline="yellow", width=2)
 
     # --- Defining plot ---
     width_ratios = [1, 1, n_refimgs/4, 1, 1, 1]
@@ -352,7 +358,17 @@ def plot_one_image_pcx_explanation(
                     ax.imshow(imgify(attr.heatmap.detach().cpu(),
                                      cmap="bwr", symmetric=True, level=3))
                 elif r == 2:
-                    ax.set_title("detection")
+                    ax.set_title("Detection", fontsize=10)
+                    label_str = f"{pred_label} {pred_confidence*100:.1f}%"
+                    ax.text(
+                        0.02, 0.98,                       #
+                        label_str,
+                        transform=ax.transAxes,
+                        fontsize= 7,
+                        fontweight="bold",
+                        color="yellow",
+                        va="top", ha="left",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.3, edgecolor="none"))
                     ax.imshow(cropped_img)
                 elif r == 3:
                     ax.set_title("class likelihood")
