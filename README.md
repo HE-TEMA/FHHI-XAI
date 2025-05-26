@@ -96,7 +96,7 @@ python worker.py
 ```
 For the worker to work properly on a Mac, before running it do 
 ```bash
-export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`.
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 ```
 
 The application will be available at `http://localhost:8080/tfa02` by default.
