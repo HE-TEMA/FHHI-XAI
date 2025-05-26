@@ -72,7 +72,7 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
     log_memory("AFTER FIGURE CREATION")
     
     # Process by explanation type
-    if "deeplab" in model_name or "unet" in model_name:
+    if "deeplab" in model_name or "unet" in model_name or "pidnet" in model_name:
         log_memory("BEFORE SEGMENTATION ATTR")
         
         # Make a copy to avoid modifying original
@@ -91,9 +91,21 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
             mask = mask > 0.5
         else:
             mask = (attr.prediction[0].argmax(dim=0) == class_id).detach().cpu()
+
+        sample_ = dataset.reverse_augmentation(img[0] + 0)
+
+        # Resizing mask in pidnet
+        if "pidnet" in model_name:
+            # Convert mask to float and add batch + channel dims
+            mask = mask.float().unsqueeze(0).unsqueeze(0)  # shape (1, 1, 60, 60)
+
+            # Interpolate to match sample_ spatial size
+            resized_mask = torch.nn.functional.interpolate(mask, size=(sample_.shape[1], sample_.shape[2]), mode='nearest')  # keep it binary
+
+            # Remove batch + channel dims and convert back to bool
+            mask = resized_mask.bool().squeeze().squeeze()  # shape (480, 480)
         
         # Apply mask to image
-        sample_ = dataset.reverse_augmentation(img[0] + 0)
         if sample_.shape[0] == 3:
             img_ = F.to_pil_image(draw_segmentation_masks(sample_, masks=mask, alpha=0.5, colors=["red"]))
         else:
