@@ -28,13 +28,13 @@ from PIL import ImageDraw
 from src.pcx_helper import get_ref_images
 
 def plot_pcx_explanations(
-    class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
-):
+    class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
+        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=False):
     img, t = dataset[sample_id]
 
     fig = plot_one_image_pcx_explanation(
-        model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
-    )
+        model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
+        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=use_half)
     plt.figure(fig)
 
     plt.tight_layout()
@@ -59,13 +59,16 @@ def plot_pcx_explanations(
 
 
 def plot_one_image_pcx_explanation(
-    model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
-):
+    model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
+        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=False):
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Model has to be in eval state
-    model.eval()
     model.to(device)
+    model.eval()
+
+    if use_half:
+        model.half()
 
     layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
     num_prototypes = num_prototypes[class_id]
@@ -121,11 +124,20 @@ def plot_one_image_pcx_explanation(
     # Calculating scores of the dataset, used further for outlier detection
     scores = gmm.score_samples(attributions)
 
+    if use_half:
+        data = data.half().to(device).requires_grad_(True)
+    else:
+        data = data.to(device).requires_grad_(True)
+
     # Running attribution on the input image
     attribution.take_prediction = prediction_num
     logger.debug(f"Running attribution on the input image, {attribution.take_prediction}") 
-    attr = attribution(data.requires_grad_(), condition, composite, record_layer=[layer_name],
-                       init_rel=1)
+    attr = attribution(
+            data,
+            condition,
+            composite,
+            record_layer=[layer_name],
+            init_rel=1)
 
     # Channel (neuron) relevance on the given layer for this image
     channel_rels = cc.attribute(attr.relevances[layer_name], abs_norm=True)
@@ -139,7 +151,10 @@ def plot_one_image_pcx_explanation(
 
     # Closest prototype
     data_p, target_p = dataset[closest_sample_to_mean]
-    data_p = data_p[None, ...].to(device)
+    if use_half:
+        data_p = data_p[None, ...].to(device).half()
+    else:
+        data_p = data_p[None, ...].to(device)
 
     # Getting top concepts/neurons for the given image in the given layer
     topk = torch.topk(channel_rels[0], n_concepts)
