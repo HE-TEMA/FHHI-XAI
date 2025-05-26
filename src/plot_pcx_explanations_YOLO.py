@@ -25,7 +25,7 @@ from matplotlib.font_manager import FontProperties
 import matplotlib.patches as patches
 import joblib
 from PIL import ImageDraw
-
+from src.pcx_helper import get_ref_images
 
 def plot_pcx_explanations(
     class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
