@@ -5,8 +5,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 # Add the parent directory to the Python path - bad practice, but it's just for the example
 import sys
+import logging
 
+# Configure logging to display debug information
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# Ensure parent directory is in path
 sys.path.append("..")
+
+# Helper imports for PCX and CRP explanations
+
 #from src.minio_client import MinIOClient
 from crp.helper import get_layer_names
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
@@ -15,85 +24,30 @@ from sklearn.mixture import GaussianMixture
 from LCRP.utils.render import vis_opaque_img_border
 from crp.image import imgify
 from torchvision.utils import draw_bounding_boxes, make_grid
-import h5py
-from PIL import Image
 import torchvision.transforms.functional as F
-
 from matplotlib.font_manager import FontProperties
 import matplotlib.patches as patches
 import joblib
 from PIL import ImageDraw
-import matplotlib.pyplot as plt
-import numpy as np
-
-
-def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_imgs_save_path="output/ref_imgs/"):
-    ref_imgs_save_path = os.path.join(ref_imgs_save_path, f"{layer_name}_class_{class_id}.h5")
-    os.makedirs(os.path.dirname(ref_imgs_save_path), exist_ok=True)
-
-    ref_imgs = {}
-    missing_keys = list(map(str, topk_ind))
-
-    if os.path.exists(ref_imgs_save_path):
-        with h5py.File(ref_imgs_save_path, "a") as f:
-            existing_keys = set(f.keys())
-            missing_keys = [str(k) for k in topk_ind if str(k) not in existing_keys]
-
-            for k in topk_ind:
-                str_k = str(k)
-                if str_k in f:
-                    group = f[str_k]
-                    ref_imgs[int(str_k)] = [Image.fromarray(group[str(idx)][:]) for idx in
-                                            sorted(group.keys(), key=int)]
-
-            if missing_keys:
-                print(f"Calculating and saving missing reference images for keys: {missing_keys}")
-                new_refs = fv.get_max_reference([int(k) for k in missing_keys], layer_name, "relevance", (0, n_ref),
-                                                composite=composite, rf=True, plot_fn=vis_opaque_img_border, batch_size=2)
-                for key, images_list in new_refs.items():
-                    group = f.create_group(str(key))
-                    assert len(images_list) >= n_ref
-                    ref_imgs[key] = []
-                    for idx, image in enumerate(images_list[:n_ref]):
-                        if isinstance(image, Image.Image):
-                            arr = np.array(image)
-                            group.create_dataset(str(idx), data=arr)
-                            ref_imgs[key].append(image)
-                        else:
-                            print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
-    else:
-        print("Reference image file does not exist, calculating all.")
-        ref_imgs = fv.get_max_reference(topk_ind, layer_name, "relevance", (0, n_ref),
-                                        composite=composite, rf=True, plot_fn=vis_opaque_img_border)
-        with h5py.File(ref_imgs_save_path, "w") as f:
-            for key, images_list in ref_imgs.items():
-                group = f.create_group(str(key))
-                assert len(images_list) >= n_ref
-                for idx, image in enumerate(images_list[:n_ref]):
-                    if isinstance(image, Image.Image):
-                        arr = np.array(image)
-                        group.create_dataset(str(idx), data=arr)
-                    else:
-                        print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
-
-    return ref_imgs
-
+from src.pcx_helper import get_ref_images
 
 def plot_pcx_explanations(
-    class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
-):
+    class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
+        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=False):
+
+    # Load the input image and label
     img, t = dataset[sample_id]
 
+    # Generate the explanation figure
     fig = plot_one_image_pcx_explanation(
-        model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
-    )
+        model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
+        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=use_half)
+
+    # Display and save the plot
     plt.figure(fig)
-
     plt.tight_layout()
-
     plot_dir = "output/pcx/pcx_plots"
     os.makedirs(plot_dir, exist_ok=True)
-
     safe_layer = layer_name.replace('.', '_')
     fname = (
         f"pcx_class{class_id}"
@@ -103,22 +57,28 @@ def plot_pcx_explanations(
         f"_nconc{n_concepts}.png"
     )
     fullpath = os.path.join(plot_dir, fname)
-
-    # save plot
     fig.savefig(fullpath, dpi=200, bbox_inches='tight')
     plt.show()
     plt.close(fig)
 
 
 def plot_one_image_pcx_explanation(
-    model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name, ref_imgs_path, output_dir_pcx, output_dir_crp
+    model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
+        ref_imgs_path, output_dir_pcx, output_dir_crp, use_half=False, outside_logger=None
 ):
+
+    if outside_logger:
+        logger = outside_logger
+
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Model has to be in eval state
-    model.eval()
     model.to(device)
+    model.eval()
+    if use_half:
+        model.half()
 
+    # Prepare layer names for CRP attribution
     layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
     num_prototypes = num_prototypes[class_id]
 
@@ -173,11 +133,20 @@ def plot_one_image_pcx_explanation(
     # Calculating scores of the dataset, used further for outlier detection
     scores = gmm.score_samples(attributions)
 
+    if use_half:
+        data = data.half().to(device).requires_grad_(True)
+    else:
+        data = data.to(device).requires_grad_(True)
+
     # Running attribution on the input image
     attribution.take_prediction = prediction_num
-    print(f"Running attribution on the input image, {attribution.take_prediction}") 
-    attr = attribution(data.requires_grad_(), condition, composite, record_layer=[layer_name],
-                       init_rel=1)
+    logger.debug(f"Running attribution on the input image, {attribution.take_prediction}") 
+    attr = attribution(
+            data,
+            condition,
+            composite,
+            record_layer=[layer_name],
+            init_rel=1)
 
     # Channel (neuron) relevance on the given layer for this image
     channel_rels = cc.attribute(attr.relevances[layer_name], abs_norm=True)
@@ -191,7 +160,10 @@ def plot_one_image_pcx_explanation(
 
     # Closest prototype
     data_p, target_p = dataset[closest_sample_to_mean]
-    data_p = data_p[None, ...].to(device)
+    if use_half:
+        data_p = data_p[None, ...].to(device).half()
+    else:
+        data_p = data_p[None, ...].to(device)
 
     # Getting top concepts/neurons for the given image in the given layer
     topk = torch.topk(channel_rels[0], n_concepts)
@@ -206,14 +178,57 @@ def plot_one_image_pcx_explanation(
 
     attribution.take_prediction = prediction_num
     cond_heatmap, _, _, _ = attribution(data.requires_grad_(), conditions, composite, exclude_parallel=True)
-    print(f"Running conditional attribution on the input image, {attribution.take_prediction}")
-    attribution.take_prediction = 0
-    cond_heatmap_p, _, _, _ = attribution(data_p.requires_grad_(), conditions, composite, exclude_parallel=True)
+    logger.debug(f"Running conditional attribution on the input image, {attribution.take_prediction}")
+
+    # ─── define cache dir & files ────────────────────────────────
+    cache_dir = os.path.join(output_dir_pcx, "cache", layer_name, f"class_{class_id}_protos_{num_prototypes}")
+    os.makedirs(cache_dir, exist_ok=True)
+    heatmap_cache = os.path.join(cache_dir, f"attr_p_heatmap_protos{num_prototypes}.npy")
+    cond_cache = os.path.join(cache_dir, f"cond_heatmap_p_protos{num_prototypes}.npy")
+
+    # ─── load or compute & cache raw heatmap arrays ────────────────
+    if os.path.exists(heatmap_cache) and os.path.exists(cond_cache):
+        # load back into torch
+        logger.debug("Loading prototype heatmaps from cache")
+        attr_p_heatmap = torch.from_numpy(np.load(heatmap_cache))
+        cond_heatmap_p = torch.from_numpy(np.load(cond_cache))
+        logger.debug("Loaded prototype heatmaps from cache")
+    else:
+        logger.debug("Cache not found, computing fresh")
+        # compute them fresh
+        attribution.take_prediction = 0
+        cond_heatmap_p, _, _, _ = attribution(
+            data_p.requires_grad_(),
+            conditions,
+            composite,
+            exclude_parallel=True
+        )
+        attribution.take_prediction = 0
+        attr_p = attribution(
+            data_p.requires_grad_(),
+            condition,
+            composite,
+            record_layer=[layer_name],
+            init_rel=1
+        )
+
+        # detach → CPU → numpy
+        heatmap_p_tensor      = attr_p.heatmap.detach().cpu()
+        cond_heatmap_p_tensor = cond_heatmap_p.detach().cpu()
+
+        # save as .npy
+        np.save(heatmap_cache,      heatmap_p_tensor.numpy())
+        np.save(cond_cache,         cond_heatmap_p_tensor.numpy())
+        attr_p_heatmap = heatmap_p_tensor
+
+        logger.debug("Saved prototype heatmaps to cache")
+
 
     # This was here previously
     # predicted_boxes = model.predict_with_boxes(data)[1][0]
     # Rewriting for clarity
-    _, batch_predicted_boxes = model.predict_with_boxes(data)
+    input_scores, batch_predicted_boxes = model.predict_with_boxes(data)
+    pred_confidence = input_scores[0, prediction_num, class_id].item()
     sample_predicted_boxes = batch_predicted_boxes[0]
 
     # This is already predicted as class_id
@@ -223,7 +238,7 @@ def plot_one_image_pcx_explanation(
     # sorted = attr.prediction.max(dim=2)[0].argsort(descending=True)[0]
     # predicted_classes = predicted_classes[sorted]
     # predicted_boxes = predicted_boxes[sorted]
-    # # Filter boxes for the d esired class.
+    # # Filter boxes for the desired class.
     # filtered_boxes = [b for b, c in zip(predicted_boxes, predicted_classes) if c == class_id]
 
     # try:
@@ -232,6 +247,7 @@ def plot_one_image_pcx_explanation(
     #     print(f"Warning: No bounding box found for class {class_id} at index {prediction_num}.")
     #     raise IndexError(f"No bounding box found for class {class_id} at index {prediction_num}.")
 
+    pred_label = dataset.class_names[class_id]
     boxes = predicted_boxes.clone().detach().float()[None]
     colors = ["#ffcc00" for _ in boxes]
     result = draw_bounding_boxes((dataset.reverse_normalization(data[0])).type(torch.uint8),
@@ -250,7 +266,7 @@ def plot_one_image_pcx_explanation(
     box_width = x_max - x_min
     box_height = y_max - y_min
     # choose zoom factor based on class
-    zoom_factor = 0.2 if class_id == 1 else 2.0
+    zoom_factor = 0.4 if class_id == 1 else 2.0
     # compute margin
     margin_x = int(zoom_factor * box_width)
     margin_y = int(zoom_factor * box_height)
@@ -264,12 +280,7 @@ def plot_one_image_pcx_explanation(
     # Draw the original bounding box (adjusted to the cropped image coordinates) with a thinner outline.
     draw = ImageDraw.Draw(cropped_img)
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
-    draw.rectangle(adjusted_box, outline="yellow", width=1)
-
-
-
-    attribution.take_prediction = 0
-    attr_p = attribution(data_p.requires_grad_(), condition, composite, record_layer=[layer_name], init_rel=1)
+    draw.rectangle(adjusted_box, outline="yellow", width=2)
 
     # This was here previously
     # predicted_boxes = model.predict_with_boxes(data_p)[1][0]
@@ -307,7 +318,7 @@ def plot_one_image_pcx_explanation(
     box_width = x_max - x_min
     box_height = y_max - y_min
     # choose zoom factor based on class
-    zoom_factor = 0.2 if class_id == 1 else 2.0
+    zoom_factor = 0.4 if class_id == 1 else 2.0
     # compute margin
     margin_x = int(zoom_factor * box_width)
     margin_y = int(zoom_factor * box_height)
@@ -321,7 +332,7 @@ def plot_one_image_pcx_explanation(
     # Draw the original bounding box (adjusted to the cropped image coordinates) with a thinner outline.
     draw = ImageDraw.Draw(cropped_img_prot)
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
-    draw.rectangle(adjusted_box, outline="yellow", width=1)
+    draw.rectangle(adjusted_box, outline="yellow", width=2)
 
     # --- Defining plot ---
     width_ratios = [1, 1, n_refimgs/4, 1, 1, 1]
@@ -352,7 +363,17 @@ def plot_one_image_pcx_explanation(
                     ax.imshow(imgify(attr.heatmap.detach().cpu(),
                                      cmap="bwr", symmetric=True, level=3))
                 elif r == 2:
-                    ax.set_title("detection")
+                    ax.set_title("Detection", fontsize=10)
+                    label_str = f"{pred_label} {pred_confidence*100:.1f}%"
+                    ax.text(
+                        0.02, 0.98,                       #
+                        label_str,
+                        transform=ax.transAxes,
+                        fontsize= 7,
+                        fontweight="bold",
+                        color="yellow",
+                        va="top", ha="left",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.3, edgecolor="none"))
                     ax.imshow(cropped_img)
                 elif r == 3:
                     ax.set_title("class likelihood")
@@ -379,7 +400,7 @@ def plot_one_image_pcx_explanation(
             # --- col 1: input localization ---
             elif c == 1:
                 ax.imshow(imgify(cond_heatmap[r],
-                                 symmetric=True, cmap="bwr", padding=True))
+                                 symmetric=True, cmap="bwr", padding=True, level=3))
                 ax.set_ylabel(f"concept {topk_ind[r]}\n"
                               f"relevance: {channel_rels[0,topk_ind[r]]*100:2.1f}")
                 if r == 0:
@@ -423,7 +444,7 @@ def plot_one_image_pcx_explanation(
             # --- col 4: proto localization ---
             elif c == 4:
                 ax.imshow(imgify(cond_heatmap_p[r],
-                                 symmetric=True, cmap="bwr", padding=True))
+                                 symmetric=True, cmap="bwr", padding=True, level=3))
                 ax.set_ylabel(f"concept {topk_ind[r]}\n"
                               f"relevance: {mean[topk_ind[r]]*100:2.1f}")
                 if r == 0:
@@ -436,8 +457,8 @@ def plot_one_image_pcx_explanation(
                     ax.imshow(img_prototype)
                 elif r == 1:
                     ax.set_title("heatmap")
-                    ax.imshow(imgify(attr_p.heatmap,
-                                     cmap="bwr", symmetric=True))
+                    ax.imshow(imgify(attr_p_heatmap,
+                                     cmap="bwr", symmetric=True, level=3))
                 elif r == 2:
                     ax.set_title("detection")
                     ax.imshow(cropped_img_prot)
