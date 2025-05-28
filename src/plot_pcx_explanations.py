@@ -31,6 +31,7 @@ import torchvision.transforms.functional as F
 from matplotlib.font_manager import FontProperties
 import matplotlib.patches as patches
 import joblib
+import plotly.graph_objects as go
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -85,6 +86,8 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_
 
     return ref_imgs
 
+
+
 def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n_refimgs=12, num_prototypes=2, layer_name="decoder.center.0.0", ref_imgs_path="output/ref_imgs/", output_dir_pcx="output/pcx/unet_flood/", output_dir_crp="output/crp/unet_flood_old/"):
     # Model has to be in eval state
     model.eval()
@@ -105,7 +108,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
     # Getting the sample we selected
     data, _ = fv.get_data_sample(sample_id, preprocessing=False)    
 
-    # Loading relevances for this layer  
+    # Loading relevances for this layer,
     folder = f"{output_dir_pcx}/{layer_name}/"
     attributions = torch.from_numpy(np.load(folder + "attributions.npy"))
 
@@ -149,6 +152,10 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
     mean = gmm.means_[np.argmax(likelihoods)]
     mean = torch.from_numpy(mean)
     closest_sample_to_mean = ((attributions - mean[None])).pow(2).sum(dim=1).argmin().item()
+
+
+    #saving stuff
+    joblib.dump((attributions, gmm, channel_rels, mean), "output/pcx/gmm_data.pkl")
 
     # Closest prototype
     data_p, target_p = dataset[closest_sample_to_mean]
@@ -243,7 +250,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
                     bold_font = FontProperties(weight='bold')
 
                     if r == 0:
-                        ax.set_title("Difference to prototype")
+                        ax.set_title("Difference to prot.")
                     ax.imshow(np.zeros((150, 150, 3)), alpha=0.2, cmap=None)
                     delta_R = (channel_rels[0][topk_ind[r]].round(decimals=3) - mean[topk_ind[r]].round(decimals=3)) * 100
                     if delta_R > 2:
@@ -289,7 +296,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
                         ax.axis("off")
                 elif c == 4:
                     if r == 0:
-                        ax.set_title("Prototype localization")
+                        ax.set_title("Prot localization")
                     ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True))
                     ax.yaxis.set_label_position("right")
 
@@ -301,14 +308,57 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
             ax.set_yticks([])
 
     # add horizontal line
-    ax.plot([1/6, 5/6], [2/5 - 0.01, 2/5 - 0.01], color='lightgray', lw=1.5, ls="--",
-            transform=plt.gcf().transFigure, clip_on=False)
-    ax.text(5/6, 2/5 - 0.008, "concepts sorted by $|R|$", transform=plt.gcf().transFigure, fontsize=10,
-            verticalalignment='bottom', ha="right", clip_on=False, in_layout=False, color="gray")
-    ax.text(5/6, 2/5 - 0.013, "remaining concepts sorted by $|\\Delta R|$", transform=plt.gcf().transFigure, fontsize=10,
-            verticalalignment='top', ha="right", clip_on=False, in_layout=False, color="gray")
+    #ax.plot([1/6, 5/6], [2/5 - 0.01, 2/5 - 0.01], color='lightgray', lw=1.5, ls="--",
+    #        transform=plt.gcf().transFigure, clip_on=False)
+    #ax.text(5/6, 2/5 - 0.008, "concepts sorted by $|R|$", transform=plt.gcf().transFigure, fontsize=10,
+    #        verticalalignment='bottom', ha="right", clip_on=False, in_layout=False, color="gray")
+    #ax.text(5/6, 2/5 - 0.013, "remaining concepts sorted by $|\\Delta R|$", transform=plt.gcf().transFigure, fontsize=10,
+    #        verticalalignment='top', ha="right", clip_on=False, in_layout=False, color="gray")
 
     # Save and show the generated figures.
     plt.tight_layout()
 
     plt.show()
+
+    return gmm, mean, channel_rels
+
+
+
+def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="output/pcx/unet_flood/"):  #automate the task of finding outlier samples
+
+    #setting model to eval state
+    model.eval()
+    layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
+
+    #Setting up for CRP
+    attribution = ATTRIBUTORS[model_name](model)
+    composite = COMPOSITES[model_name](canonizers=[CANONIZERS[model_name]()])
+
+    fv = VISUALIZATIONS[model_name](attribution, dataset, layer_names,
+                                     preprocess_fn=lambda x: x,
+                                     path=output_dir_pcx,
+                                     max_target="max")
+
+    # Load or compute the GMM
+    folder = f"{output_dir_pcx}/{layer_name}/"
+    attributions = torch.from_numpy(np.load(folder + "attributions.npy"))
+    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
+
+    if os.path.exists(cache_path):
+        gmm = joblib.load(cache_path)
+    else:
+        gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions)
+        joblib.dump(gmm, cache_path)
+
+    #log-likelihood scores
+    scores = gmm.score_samples(attributions)
+
+    # Define outlier thresholds (e.g., 1st and 99th percentiles)
+    lower_threshold = np.percentile(scores, 1)
+    upper_threshold = np.percentile(scores, 99)
+
+    # Get outlier indices
+    outliers = [i for i, score in enumerate(scores)
+                if score < lower_threshold or score > upper_threshold]
+
+    return outliers, scores, lower_threshold, upper_threshold
