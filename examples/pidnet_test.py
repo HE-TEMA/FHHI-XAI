@@ -72,7 +72,7 @@ def LRP(x, model):
     return zennit.image.imgify(attr,
                                symmetric=True,)
 N=5
-plt.subplots(N,4, figsize=(10, 15))
+plt.subplots(N,3, figsize=(10, 15))
 for i in range(N):
     x = dataset[i][0].unsqueeze(0)
     model.eval()
@@ -83,33 +83,32 @@ for i in range(N):
     out_plain = model(x)[1]
     xpl=LRP(x, model)
 
-    plt.subplot(N,4,4*i+1)
+    plt.subplot(N,3,3*i+1)
     if i==0:
         plt.title("Input")
     plt.imshow(undo_to_tensor(x))
     plt.axis('off')  
-    plt.subplot(N,4,4*i+2)
+    plt.subplot(N,3,3*i+2)
     if i==0:
         plt.title("w.o. canonizer")
     plt.imshow(xpl)
     plt.axis('off')
 
-    canonizers=[PIDNetBaseCanonizer(),PIDNetCanonizer()]
-    for j, c in enumerate(canonizers):
-        h=c.apply(model)
-        out_canon = model(x)[1]
-        xpl=LRP(x, model)
-        plt.subplot(N,4,4*i+3+j)
-        if i==0:
-            plt.title(f"w. {'half-' if j==0 else ''}canonizer")
-        plt.imshow(xpl)
-        plt.axis('off')  
-        print(f"Output difference of {'half-' if j==0 else ''}canonizer after attaching: {(out_plain - out_canon).abs().max()}")
-        for handle in h:
-            handle.remove()
-        out_canon = model(x)[1]
-        print(f"Output difference of  {'half-' if j==0 else ''}canonizer after detaching: {(out_plain - out_canon).abs().max()}")
-        print("\n\n\n===\n\n")
+    c=PIDNetCanonizer()
+    h=c.apply(model)
+    out_canon = model(x)[1]
+    xpl=LRP(x, model)
+    plt.subplot(N,3,3*i+3)
+    if i==0:
+        plt.title(f"w. canonizer")
+    plt.imshow(xpl)
+    plt.axis('off')  
+    print(f"Output difference of canonizer after attaching: {(out_plain - out_canon).abs().max()}")
+    for handle in h:
+        handle.remove()
+    out_canon = model(x)[1]
+    print(f"Output difference of canonizer after detaching: {(out_plain - out_canon).abs().max()}")
+    print("\n\n\n===\n\n")
 plt.show()
 
 #composite = COMPOSITES[model_name](canonizers=[CANONIZERS[model_name]()])
