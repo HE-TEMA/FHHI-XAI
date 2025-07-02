@@ -155,7 +155,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
 
 
     #saving stuff
-    joblib.dump((attributions, gmm, channel_rels, mean), "output/pcx/gmm_data.pkl")
+    joblib.dump((attributions, gmm, channel_rels.cpu(), mean), "output/pcx/gmm_data.pkl")
 
     # Closest prototype
     data_p, target_p = dataset[closest_sample_to_mean]
@@ -178,6 +178,16 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
     # Mask for plotting segmentation
     mask = (attr.prediction[0].argmax(dim=0) == 1).detach().cpu()
     sample_ = dataset.reverse_augmentation(data)
+    # Resizing mask in pidnet
+    if "pidnet" in model_name:
+        # Convert mask to float and add batch + channel dims
+        mask = mask.float().unsqueeze(0).unsqueeze(0)  # shape (1, 1, 60, 60)
+
+        # Interpolate to match sample_ spatial size
+        resized_mask = torch.nn.functional.interpolate(mask, size=(sample_[:3, :, :][0].shape[1], sample_[:3, :, :][0].shape[2]), mode='nearest')  # keep it binary
+
+        # Remove batch + channel dims and convert back to bool
+        mask = resized_mask.bool().squeeze().squeeze()  # shape (480, 480)
     img_ = F.to_pil_image(draw_segmentation_masks(sample_[:3, :, :][0], masks=mask, alpha=0.3, colors=["red"]))
 
     # mask_prototype = (attr_p.prediction[0].argmax(dim=0) == 1).detach().cpu()
