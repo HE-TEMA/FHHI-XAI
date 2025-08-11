@@ -16,11 +16,13 @@ from LCRP.models import get_model
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.plot_pcx_explanations_YOLO import plot_one_image_pcx_explanation
 from src.datasets.person_car_dataset import PersonCarDataset
+from src.plot_pcx_all import plot_pcx_explanations_pidnet
 from src.datasets.flood_dataset import FloodDataset
 from src.entities import get_person_vehicle_detection_explanation_entity, get_flood_segmentation_explanation_entity
 from src.minio_client import FHHI_MINIO_BUCKET
 from src.memory_logging import log_cuda_memory
-
+from crp.helper import get_layer_names
+from src.plot_pcx_explanations import plot_pcx_explanations
 
 class Explanator:
     """Class that stores all loaded models together with all relevant data for generating CRP explanations.
@@ -145,9 +147,9 @@ class Explanator:
     def flood_model(self):
         if self._flood_model is None:
             log_cuda_memory(self.logger, "BEFORE LOADING FLOOD MODEL")
-            model_name = "unet"
-            flood_model_path = os.path.join(self.project_root, "models", "unet_flood_modified.pt")
-            self._flood_model = get_model(model_name=model_name, classes=2, ckpt_path=flood_model_path, device=self.device, dtype=self.dtype)
+            model_name = "pidnet"
+            flood_model_path = os.path.join(self.project_root, "models", "flood_s_best_pidnet_modified.pt")
+            self._flood_model = get_model(model_name="pidnet", classes=2, ckpt_path=flood_model_path, device=self.device, dtype=self.dtype)
             log_cuda_memory(self.logger, "AFTER LOADING FLOOD MODEL")
         return self._flood_model
 
@@ -157,49 +159,59 @@ class Explanator:
             flood_data_path = os.path.join(self.project_root, "data", "General_Flood_v3")
 
             transform = transforms.Compose([
-                transforms.ToTensor(),  # Convert to tensor
+                transforms.ToTensor(),
                 transforms.Lambda(lambda x: x.to(self.dtype)),
             ])
-            
+
             self._flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
         return self._flood_dataset
 
+ 
+        
     def explain_flood_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
-        """Generate flood segmentation explanation."""
+        """Generate flood segmentation explanation using PCX."""
         log_cuda_memory(self.logger, "FLOOD_SEG START")
 
-        # Setting up main parameters for explanation
+        # Parameters
         class_id = 1  # Flood class ID
         n_concepts = 3
         n_refimgs = 12
-        layer = "encoder.features.15"  # Based on UNet example
-        mode = "relevance"
-        prediction_num = 0
-        
-        glocal_analysis_output_dir = "output/crp/unet_flood"
-        
+        model_name = "pidnet"
+        num_prototypes = 2
+        output_dir_pcx = "output/pcx/pidnet_flood/"
+        output_dir_crp = "output/crp/pidnet_flood/"
+        ref_imgs_path = "output/ref_imgs_pidnet/"
+        layer_names = get_layer_names(self.flood_model, [torch.nn.Conv2d])
+        layer_name = layer_names[13]
+        print(layer_name)
+
         # Apply transform to the input test image
         log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
         image_tensor = self.flood_dataset.transform(image)
         image_tensor = self.flood_dataset.resize(image_tensor)
         log_cuda_memory(self.logger, "AFTER IMAGE TRANSFORM")
         
-        # Generate explanation - this is likely the memory-intensive part
+        print("Shape after batch dimension:", image_tensor.shape)
+
+
+
         log_cuda_memory(self.logger, "BEFORE EXPLANATION GENERATION")
-        explanation_fig = plot_one_image_explanation(
-            "unet", self.flood_model, image_tensor, self.flood_dataset,
-            class_id, layer, prediction_num, mode, n_concepts, n_refimgs,
-            output_dir=glocal_analysis_output_dir
+        explanation_fig = plot_pcx_explanations_pidnet(model_name, self.flood_model, self.flood_dataset, image_tensor = image_tensor, n_concepts=5, n_refimgs=12,
+        num_prototypes=num_prototypes, layer_name=layer_name,
+        ref_imgs_path=ref_imgs_path, output_dir_pcx=output_dir_pcx, output_dir_crp=output_dir_crp
         )
+
+
+        
+        # fig is returned implicitly as part of this function; adapt if needed
         log_cuda_memory(self.logger, "AFTER EXPLANATION GENERATION")
-        
+
         explanation_img = fig_to_array(explanation_fig)
-        
+
         # Prepare explanation entity
         original_entity_type = "FloodSegmentation"
-        
         explanation_image_filename = f"tfa02/{original_entity_type}/{original_image_filename}"
-        
+
         explanation_entity = get_flood_segmentation_explanation_entity(
             original_image_bucket=original_image_bucket,
             original_image_filename=original_image_filename,
@@ -208,15 +220,15 @@ class Explanator:
             class_id=class_id,
             n_concepts=n_concepts,
             n_refimgs=n_refimgs,
-            layer=layer,
-            mode=mode
+            layer=layer_name,
+            mode="relevance"
         )
-        
+
         log_cuda_memory(self.logger, "FLOOD_SEG END")
-        # Clear cache
         torch.cuda.empty_cache()
-        
+
         return explanation_entity, [explanation_img], [explanation_image_filename]
+        
 
 
 
