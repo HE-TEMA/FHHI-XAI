@@ -149,7 +149,7 @@ class Explanator:
             log_cuda_memory(self.logger, "BEFORE LOADING FLOOD MODEL")
             model_name = "pidnet"
             flood_model_path = os.path.join(self.project_root, "models", "flood_s_best_pidnet_modified.pt")
-            self._flood_model = get_model(model_name=model_name, classes=2, ckpt_path=flood_model_path, device=self.device, dtype=self.dtype)
+            self._flood_model = get_model(model_name="pidnet", classes=2, ckpt_path=flood_model_path, device=self.device, dtype=self.dtype)
             log_cuda_memory(self.logger, "AFTER LOADING FLOOD MODEL")
         return self._flood_model
 
@@ -182,7 +182,7 @@ class Explanator:
         output_dir_crp = "output/crp/pidnet_flood/"
         ref_imgs_path = "output/ref_imgs_pidnet/"
         layer_names = get_layer_names(self.flood_model, [torch.nn.Conv2d])
-        layer_name = layer_names[20]
+        layer_name = layer_names[13]
         print(layer_name)
 
         # Apply transform to the input test image
