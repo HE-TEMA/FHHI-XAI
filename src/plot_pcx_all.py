@@ -112,7 +112,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts , n_
         raise
 
 
-def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_concepts=5, n_refimgs=12, num_prototypes=2, layer_name="decoder.center.0.0", ref_imgs_path="/home/heydari/FHHI-XAI/src/output/ref_imgs_pidnet/", output_dir_pcx="/home/heydari/FHHI-XAI/src/output/pcx/pidnet_flood/", output_dir_crp="/home/heydari/FHHI-XAI/src/output/crp/pidnet_flood/"):
+def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_concepts=5, n_refimgs=12, num_prototypes=2, layer_name="decoder.center.0.0", ref_imgs_path="output/ref_imgs_pidnet/", output_dir_pcx="output/pcx/pidnet_flood/", output_dir_crp="output/crp/pidnet_flood/"):
     # Model has to be in eval state
     model.eval()
     layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
@@ -141,8 +141,8 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_con
     
     # Training GMM based on relevances if not done already
     # Initialize Gaussian Mixture Model (GMM) with specified number of prototypes as components
-    cache_path = f'/home/heydari/FHHI-XAI/src/output/pcx/gmm_cache_{layer_name}.pkl'
-    prototype_cache_path = f'/home/heydari/FHHI-XAI/src/output/pcx/prototype_gmms_cache_{layer_name}.pkl'
+    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
+    prototype_cache_path = f'output/pcx/prototype_gmms_cache_{layer_name}.pkl'
 
     if os.path.exists(cache_path) and os.path.exists(prototype_cache_path):
         # Load the GMM and individual GMMs from the cache files
@@ -180,7 +180,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_con
 
 
     #saving stuff
-    joblib.dump((attributions, gmm, channel_rels.cpu(), mean), "/home/heydari/FHHI-XAI/src/output/pcx/gmm_data.pkl")
+    joblib.dump((attributions, gmm, channel_rels.cpu(), mean), "output/pcx/gmm_data.pkl")
 
     # Closest prototype
     data_p, target_p = dataset[closest_sample_to_mean]
@@ -359,7 +359,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_con
 
 
 
-def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="/home/heydari/FHHI-XAI/src/output/pcx/pidnet_flood/"):  #automate the task of finding outlier samples
+def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="output/pcx/pidnet_flood/"):  #automate the task of finding outlier samples
 
     #setting model to eval state
     model.eval()
@@ -377,7 +377,7 @@ def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.cente
     # Load or compute the GMM
     folder = f"{output_dir_pcx}/{layer_name}/"
     attributions = torch.from_numpy(np.load(folder + "attributions.npy"))
-    cache_path = f'/home/heydari/FHHI-XAI/src/output/pcx/gmm_cache_{layer_name}.pkl'
+    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
 
     if os.path.exists(cache_path):
         gmm = joblib.load(cache_path)
