@@ -2,6 +2,7 @@ import os
 import gc
 import sys
 import copy
+import warnings
 import joblib
 import h5py
 import numpy as np
@@ -9,6 +10,10 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.font_manager import FontProperties
 from PIL import Image
+#import plotly
+#import plotly.graph_objs
+#import plotly.graph_objects as go
+
 
 import torch
 import torchvision
@@ -18,6 +23,7 @@ from torchvision.utils import draw_segmentation_masks, make_grid
 
 import zennit.image as zimage
 from sklearn.mixture import GaussianMixture
+from sklearn.exceptions import InconsistentVersionWarning
 
 from crp.helper import get_layer_names
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
@@ -26,7 +32,7 @@ from LCRP.utils.render import vis_opaque_img_border as _vis_opaque_img_border_or
 from crp.image import imgify
 
 # Add the parent directory to the Python path - bad practice, but it's just for the example
-sys.path.append("/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/")
+#sys.path.append("/Users/heydari/Desktop/test/FHHI-XAI-PIDNET/")
 
 from src.glocal_analysis import run_analysis
 from src.datasets.flood_dataset import FloodDataset
@@ -35,7 +41,7 @@ from src.plot_crp_explanations import plot_explanations, plot_one_image_explanat
 from src.minio_client import MinIOClient
 from LCRP.models import get_model
 
-import plotly.graph_objects as go
+#import plotly.graph_objects as go
 
 # Device handling: use torch.device everywhere
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -100,7 +106,7 @@ def _maybe_empty_cuda_cache():
             pass
 
 
-def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_path="/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/ref_imgs_pidnet/"):
+def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_path="examples/output/ref_imgs_pidnet/"):
     """
     Get and cache reference images. CPU/PIL based.
     """
@@ -165,7 +171,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts, n_r
         _maybe_reset_cuda_max_memory()
 
         image_tensor, t = dataset[sample_id]
-
+        image_tensor =image_tensor.to(device)
         fig = plot_pcx_explanations_pidnet(
             model_name, model, dataset, image_tensor,
             n_concepts=n_concepts, n_refimgs=n_refimgs, num_prototypes=num_prototypes,
@@ -188,9 +194,9 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts, n_r
 def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                                  n_concepts=5, n_refimgs=12, num_prototypes=2,
                                  layer_name="decoder.center.0.0",
-                                 ref_imgs_path="/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/ref_imgs_pidnet/",
-                                 output_dir_pcx="/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/pcx/pidnet_flood/",
-                                 output_dir_crp="/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/crp/pidnet_flood/"):
+                                 ref_imgs_path="examples/output/ref_imgs_pidnet/",
+                                 output_dir_pcx="examples/output/pcx/pidnet_flood/",
+                                 output_dir_crp="examples/output/crp/pidnet_flood/"):
     """
     Main function that computes PCX/CRP visualizations.
     This version keeps tensors on GPU when possible and only moves to CPU for
@@ -232,14 +238,33 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     class_id = 1
 
     # GMM cache paths
-    cache_path = f'/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/pcx/gmm_cache_{layer_name}.pkl'
-    prototype_cache_path = f'/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/pcx/prototype_gmms_cache_{layer_name}.pkl'
+    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
+    prototype_cache_path = f'output/pcx/prototype_gmms_cache_{layer_name}.pkl'
 
     # Use CPU numpy arrays for sklearn GaussianMixture
+    def _safe_joblib_load(path):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", InconsistentVersionWarning)
+            try:
+                return joblib.load(path)
+            except InconsistentVersionWarning:
+                return None
+
+    gmm = None
+    prototype_gmms = None
     if os.path.exists(cache_path) and os.path.exists(prototype_cache_path):
-        gmm = joblib.load(cache_path)
-        prototype_gmms = joblib.load(prototype_cache_path)
-    else:
+        gmm = _safe_joblib_load(cache_path)
+        prototype_gmms = _safe_joblib_load(prototype_cache_path) if gmm is not None else None
+
+    if gmm is None or prototype_gmms is None:
+        # Drop potentially incompatible caches and refit for the current sklearn version
+        try:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+            if os.path.exists(prototype_cache_path):
+                os.remove(prototype_cache_path)
+        except OSError:
+            pass
         # Fit GMM on CPU copy of attributions
         attributions_for_gmm = attributions_np  # already CPU numpy
         gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions_for_gmm)
@@ -256,19 +281,31 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
     # Calculate scores for the dataset (CPU)
     scores = gmm.score_samples(attributions_np)
-
+    # raise ValueError(f"device: {device} data device {data.device} model device {model.device}")
     # Run attribution on the input image (this will happen on device)
     attr = attribution(data.requires_grad_(), [{"y": class_id}], composite, record_layer=[layer_name], init_rel=1)
 
     # Channel (neuron) relevance on the given layer for this image
-    # move relevances to device for any tensor ops, but keep cpu copy for sklearn
-    rel_tensor = attr.relevances[layer_name]
-    channel_rels = cc.attribute(rel_tensor.to(device), abs_norm=True)
+    rel_tensor = attr.relevances[layer_name].detach()
+    channel_rels = cc.attribute(rel_tensor, abs_norm=True).detach()
+    attr_heatmap = attr.heatmap.detach().cpu() if hasattr(attr, "heatmap") else None
+    pred_tensor = attr.prediction[0].detach() if hasattr(attr, "prediction") else None
+
+    # Move tensors off GPU as soon as possible to free memory
+    channel_rels_cpu = channel_rels.cpu()
+    pred_tensor_cpu = pred_tensor.cpu() if pred_tensor is not None else None
+
+    del rel_tensor
+    del channel_rels
+    del attr
+    torch.cuda.empty_cache()
+
+    channel_rels = channel_rels_cpu
 
     # Score the sample against the GMM (sklearn CPU) - convert to CPU numpy
-    channel_rels_cpu = channel_rels.detach().cpu().numpy()
-    score_sample = gmm.score_samples(channel_rels_cpu)
-    likelihoods = [g_.score_samples(channel_rels_cpu) for g_ in prototype_gmms]
+    channel_rels_np = channel_rels.numpy()
+    score_sample = gmm.score_samples(channel_rels_np)
+    likelihoods = [g_.score_samples(channel_rels_np) for g_ in prototype_gmms]
 
     # Compute mean of the most likely prototype, then keep it as tensor on device for comparisons
     mean_np = gmm.means_[np.argmax(likelihoods)]
@@ -278,14 +315,17 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # attributions is on device; ensure shapes align
     # attributions shape expected (N, D)
     closest_sample_to_mean = ((attributions - mean[None]).pow(2).sum(dim=1)).argmin().item()
+    mean_cpu = mean.detach().cpu()
+    del mean
+    torch.cuda.empty_cache()
 
     # Save CPU-safe GMM data for inspection
     try:
-        joblib.dump((attributions.detach().cpu().numpy(), gmm, channel_rels.detach().cpu().numpy(), mean.detach().cpu().numpy()), "/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/pcx/gmm_data.pkl")
+        joblib.dump((attributions.detach().cpu().numpy(), gmm, channel_rels.detach().cpu().numpy(), mean_cpu.numpy()), "examples/output/pcx/gmm_data.pkl")
     except Exception:
         # fallback: save only plain things
         try:
-            joblib.dump((attributions.detach().cpu(), channel_rels.detach().cpu(), mean.detach().cpu()), "/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/pcx/gmm_data_fallback.pkl")
+            joblib.dump((attributions.detach().cpu(), channel_rels.detach().cpu(), mean_cpu), "examples/output/pcx/gmm_data_fallback.pkl")
         except Exception:
             pass
 
@@ -305,16 +345,37 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # Calculate conditional heatmaps and prototype heatmaps (calls to attribution may return CPU or device tensors)
     conditions = [{"y": class_id, layer_name: int(c)} for c in topk_ind]
 
-    # attr_p: prototype attribution (on device or CPU as library returns)
-    attr_p = attribution(data_p_device.requires_grad_(), [{"y": class_id}], composite, record_layer=[layer_name])
-    cond_heatmap_p, _, _, _ = attribution(data_p_device.requires_grad_(), conditions, composite)
-    cond_heatmap, _, _, _ = attribution(data.requires_grad_(), conditions, composite)
+    def _to_cpu_container(obj):
+        if torch.is_tensor(obj):
+            return obj.detach().cpu()
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(_to_cpu_container(o) for o in obj)
+        return obj
+
+    def _extract_heatmap(res):
+        if hasattr(res, "heatmap"):
+            return res.heatmap
+        if isinstance(res, (list, tuple)):
+            return res[0]
+        return res
+
+    def _collect_conditional_heatmaps(input_tensor, conds):
+        heatmaps = []
+        for cond in conds:
+            # Clone to avoid autograd graph accumulation and keep memory bounded
+            inp = input_tensor.detach().clone().requires_grad_()
+            result = attribution(inp, [cond], composite)
+            heatmaps.append(_to_cpu_container(_extract_heatmap(result)))
+            torch.cuda.empty_cache()
+        return heatmaps
+
+    cond_heatmap_p = _collect_conditional_heatmaps(data_p_device, conditions)
+    cond_heatmap = _collect_conditional_heatmaps(data, conditions)
 
     # Segmentation mask for plotting (CPU)
-    # Ensure attr.prediction exists and move to CPU before argmax
-    if hasattr(attr, "prediction"):
-        pred_tensor = attr.prediction[0]
-        mask = (pred_tensor.argmax(dim=0) == class_id).detach().cpu()
+    # Use stored prediction to build mask
+    if pred_tensor_cpu is not None:
+        mask = (pred_tensor_cpu.argmax(dim=0) == class_id).detach().cpu()
     else:
         # In case prediction missing, make empty mask (safe fallback)
         # shape fallback to small size if needed
@@ -403,7 +464,9 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                     elif r == 1:
                         ax.set_title("heatmap")
                         try:
-                            heatmap_img = imgify(attr.heatmap.detach().cpu(), cmap="bwr", symmetric=True)
+                            if attr_heatmap is None:
+                                raise ValueError("missing heatmap")
+                            heatmap_img = imgify(attr_heatmap, cmap="bwr", symmetric=True)
                             ax.imshow(heatmap_img)
                         except Exception:
                             ax.axis("off")
@@ -467,7 +530,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                         ax.set_title("Difference to prot.")
                     ax.imshow(np.zeros((150, 150, 3)), alpha=0.2)
                     try:
-                        delta_R = (channel_rels[0][topk_ind[r]].round(decimals=3) - mean[topk_ind[r]].round(decimals=3)) * 100
+                        delta_R = (channel_rels[0][topk_ind[r]].round(decimals=3) - mean_cpu[topk_ind[r]].round(decimals=3)) * 100
                         delta_R = float(delta_R)
                     except Exception:
                         delta_R = 0.0
@@ -501,7 +564,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                     try:
                         ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True))
                         ax.yaxis.set_label_position("right")
-                        ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(mean[topk_ind[r]] * 100):2.1f}%")
+                        ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(mean_cpu[topk_ind[r]] * 100):2.1f}%")
                     except Exception:
                         ax.axis("off")
 
@@ -518,12 +581,6 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                                 ax.contour(mask_prototype, colors="black", linewidths=[1])
                             except Exception:
                                 pass
-                        except Exception:
-                            ax.axis("off")
-                    elif r == 1:
-                        ax.set_title("heatmap")
-                        try:
-                            ax.imshow(imgify(attr_p.heatmap, cmap="bwr", symmetric=True))
                         except Exception:
                             ax.axis("off")
                     else:
@@ -549,7 +606,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     return fig
 
 
-def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/pcx/pidnet_flood/"):
+def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="examples/output/pcx/pidnet_flood/"):
     """
     Compute outlier scores using GMM on stored attributions.
     Uses GPU where relevant but keeps sklearn parts on CPU.
@@ -573,7 +630,7 @@ def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.cente
     attributions_np = np.load(folder + "attributions.npy")
     attributions = torch.from_numpy(attributions_np).to(device)
 
-    cache_path = f'/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/output/pcx/gmm_cache_{layer_name}.pkl'
+    cache_path = f'examples/output/pcx/gmm_cache_{layer_name}.pkl'
 
     if os.path.exists(cache_path):
         gmm = joblib.load(cache_path)
