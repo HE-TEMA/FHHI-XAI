@@ -1,4 +1,5 @@
 import os
+import gc
 import torch
 import copy
 import torchvision
@@ -8,7 +9,7 @@ import matplotlib.pyplot as plt
 
 # Add the parent directory to the Python path - bad practice, but it's just for the example
 import sys
-sys.path.append("..")
+sys.path.append("/Users/heydari/Documents/TEMA-FHHI-PY/FHHI-XAI/examples/")
 
 from src.glocal_analysis import run_analysis 
 from src.datasets.flood_dataset import FloodDataset
@@ -36,7 +37,8 @@ import plotly.graph_objects as go
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_path="output/ref_imgs/"):
+
+def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_path="output/ref_imgs_pidnet/"):
     ref_imgs_save_path = os.path.join(ref_imgs_save_path, f"{layer_name}.h5")
     os.makedirs(os.path.dirname(ref_imgs_save_path), exist_ok=True)
 
@@ -86,15 +88,37 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_
 
     return ref_imgs
 
+def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts , n_refimgs , num_prototypes , layer_name , ref_imgs_path  ,  output_dir_pcx , output_dir_crp):
+    try:
+        # Reset max memory tracking
+        if torch.cuda.is_available():
+            torch.cuda.reset_max_memory_allocated()
+        image_tensor, t = dataset[sample_id]
+    
+        # Run optimized version
+        fig = plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_concepts, n_refimgs, num_prototypes , layer_name , ref_imgs_path , output_dir_pcx , output_dir_crp)
+
+        # Ensure any remaining tensors are cleared
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        return fig
+    
+    except Exception as e:
+        # In case of an error, make sure memory is cleared
+        print(f"Error during explanation: {e}")
+        gc.collect()
+        torch.cuda.empty_cache()
+        raise
 
 
-def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n_refimgs=12, num_prototypes=2, layer_name="decoder.center.0.0", ref_imgs_path="output/ref_imgs/", output_dir_pcx="output/pcx/unet_flood/", output_dir_crp="output/crp/unet_flood_old/"):
+def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_concepts=5, n_refimgs=12, num_prototypes=2, layer_name="decoder.center.0.0", ref_imgs_path="output/ref_imgs_pidnet/", output_dir_pcx="output/pcx/pidnet_flood/", output_dir_crp="output/crp/pidnet_flood/"):
     # Model has to be in eval state
     model.eval()
     layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
 
     # Setting up CRP 
-    attribution = ATTRIBUTORS["unet"](model)
+    attribution = ATTRIBUTORS[model_name](model)
     composite = COMPOSITES[model_name](canonizers=[CANONIZERS[model_name]()])
     condition = [{"y": 1}]    
     fv = VISUALIZATIONS[model_name](attribution,
@@ -106,13 +130,14 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
     cc = ChannelConcept()
 
     # Getting the sample we selected
-    data, _ = fv.get_data_sample(sample_id, preprocessing=False)    
+    img = image_tensor[None, ...].to(device)
 
     # Loading relevances for this layer,
     folder = f"{output_dir_pcx}/{layer_name}/"
     attributions = torch.from_numpy(np.load(folder + "attributions.npy"))
 
-    
+    data = img   
+    class_id = 1
     
     # Training GMM based on relevances if not done already
     # Initialize Gaussian Mixture Model (GMM) with specified number of prototypes as components
@@ -138,7 +163,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
 
     # Calculating scores of the dataset, used further for outlier detection
     scores = gmm.score_samples(attributions)
-
+    
     # Running attribution on the input image
     attr = attribution(data.requires_grad_(), condition, composite, record_layer=[layer_name],
                            init_rel=1)
@@ -209,8 +234,8 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
             if c == 0:
                 if r == 0:
                     ax.set_title("input")
-                    img = imgify(fv.get_data_sample(sample_id, preprocessing=False)[0][0])
-                    ax.imshow(img)
+                    input_img = dataset.reverse_augmentation(img[0])
+                    ax.imshow(input_img.permute(1, 2, 0).cpu().numpy())
                     ax.imshow(np.asarray(img_))
                     ax.contour(mask, colors="black", linewidths=[1])
                 elif r == 1:
@@ -334,7 +359,7 @@ def plot_pcx_explanations(model_name, model, dataset, sample_id, n_concepts=5, n
 
 
 
-def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="output/pcx/unet_flood/"):  #automate the task of finding outlier samples
+def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.center.0.0", num_prototypes=2, output_dir_pcx="output/pcx/pidnet_flood/"):  #automate the task of finding outlier samples
 
     #setting model to eval state
     model.eval()

@@ -396,9 +396,6 @@ class Explanator:
         raise NotImplementedError("Smoke segmentation explanation is not implemented yet.")
 
 
-import os
-import logging  # Make sure logging is imported if not already
-
 # Configure basic logging if not done elsewhere
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
