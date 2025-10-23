@@ -413,7 +413,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
         mask = torch.zeros((1, 1), dtype=torch.bool)
 
     # Reverse augmentation expects CPU tensors; move the original input to CPU for reverse_augmentation
-    sample_cpu_for_plot = dataset.reverse_augmentation(img.detach().cpu())
+    sample_cpu_for_plot = dataset.reverse_augmentation(img.detach().cpu().float())
     # Resize mask if pidnet-style needs change
     if "pidnet" in model_name:
         # Convert mask to float and add batch + channel dims

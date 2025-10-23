@@ -32,7 +32,7 @@ class Explanator:
         self.logger = logger
         # General setup
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.dtype = torch.float32
+        self.dtype = torch.float16
 
         # Log initial memory state
         log_cuda_memory(self.logger, "INIT")
@@ -203,7 +203,7 @@ class Explanator:
                 ref_imgs_path=ref_imgs_path,
                 output_dir_crp=output_dir_crp,
                 output_dir_pcx=output_dir_pcx,
-                precision="autocast_fp16",
+                precision="autocast_fp16" if self.dtype == torch.float16 else "fp32",
             )
         finally:
             # Release the input tensor as soon as the attribution run finishes
