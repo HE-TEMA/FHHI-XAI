@@ -23,6 +23,10 @@
         "type": "Property",
         "value": "a6be75af1b9b5ba7d102971f4f8048ec"
       },
+      "alert_ref": {
+        "type": "Relationship",
+        "object": "urn:ngsi-ld:tema:kamk:sv07:alert:brk:111"
+      },
       "bucket": {
         "type": "Property",
         "value": "use"
