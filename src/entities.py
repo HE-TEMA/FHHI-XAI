@@ -37,8 +37,8 @@ person_vehicle_detection_explanation_template = {
         "value": None
     },
     "alert_ref": {
-        "type": "Property",
-        "value": None
+        "type": "Relationship",
+        "object": None
     },
 
     # Comes from the original detection entity
@@ -91,7 +91,7 @@ def get_person_vehicle_detection_explanation_entity(
 
     template["timestamp"]["value"] = timestamp
     template["bm_id"]["value"] = bm_id
-    template["alert_ref"]["value"] = alert_ref
+    template["alert_ref"]["object"] = alert_ref
     template["original_image"]["value"]["bucket"] = original_image_bucket
     template["original_image"]["value"]["filename"] = original_image_filename
     template["original_detection"]["value"]["boxes"] = original_detection_boxes
@@ -143,8 +143,8 @@ flood_segmentation_explanation_template = {
         "value": None
     },
     "alert_ref": {
-        "type": "Property",
-        "value": None
+        "type": "Relationship",
+        "object": None
     },
 
     # Comes from the original segmentation entity
@@ -193,7 +193,7 @@ def get_flood_segmentation_explanation_entity(
 
     template["timestamp"]["value"] = timestamp
     template["bm_id"]["value"] = bm_id
-    template["alert_ref"]["value"] = alert_ref
+    template["alert_ref"]["object"] = alert_ref
     template["original_image"]["value"]["bucket"] = original_image_bucket
     template["original_image"]["value"]["filename"] = original_image_filename
     template["explanation_image"]["value"]["bucket"] = explanation_image_bucket

@@ -174,9 +174,9 @@ class Explanator:
         n_refimgs = 12
         model_name = "pidnet"
         num_prototypes = 2
-        output_dir_pcx = "examples/output/pcx/pidnet_flood/"
-        output_dir_crp = "examples/output/crp/pidnet_flood/"
-        ref_imgs_path = "examples/output/ref_imgs_pidnet/"
+        output_dir_pcx = "output/pcx/pidnet_flood/"
+        output_dir_crp = "output/crp/pidnet_flood/"
+        ref_imgs_path = "output/ref_imgs_pidnet/"
         # layer_names = get_layer_names(self.flood_model, [torch.nn.Conv2d])
         layer_name = 'layer5.0.conv1'
         print(layer_name)

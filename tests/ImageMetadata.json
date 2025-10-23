@@ -24,8 +24,8 @@
         "value": "2fa4e1f4dbbe86744898e2d51ebed567"
       },
       "alert_ref": {
-        "type": "Property",
-        "value": "urn:ngsi-ld:tema:kamk:sv07:alert:test:dmalian:25092025:112"
+        "type": "Relationship",
+        "object": "urn:ngsi-ld:tema:kamk:sv07:alert:brk:111"
       },
       "bucket": {
         "type": "Property",

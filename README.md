@@ -4,11 +4,11 @@ This repository contains the code for applying the L-CRP method for TEMA project
 
 ## Setting up
 
-### Load the data and models
+### Load the data, models and crp outputs
 
-Data and models are available on Google Drive https://drive.google.com/drive/folders/1vmkyJzojacZUc2rz-VBw5T07KzoFslzB?usp=sharing. 
+Data for flood segmentation and person vehicle detection can be downloaded here: https://drive.google.com/drive/folders/1boT__x0qDbw-9XYPo6R3k_fZrxcpliZw
+Latest models and precomputed CRP/PCX outputs are available here https://drive.google.com/drive/folders/1VLiz03yOd3L7520tc0Ns_4Jaf8pHD9UQ.
 
-Path for data is `datasets/data`.
 
 #### 1. U-Net model: 
 - Checkpoint: Checkpoints/unet_flood.pt

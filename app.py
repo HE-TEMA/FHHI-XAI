@@ -233,7 +233,7 @@ def post_data():
         # Quick validation check
         if entity_type == "Alert":
             bm_id = entity["bm_id"]["value"]
-            alert_ref = entity["alert_ref"]["value"]
+            alert_ref = entity["alert_ref"]["object"]
             set_bm_id(redis_conn, bm_id)
             set_alert_ref_id(redis_conn, alert_ref)
             msg = f"Received Alert with bm_id and alert_ref saved to redis: {bm_id}, {alert_ref}"
@@ -262,7 +262,7 @@ def post_data():
             set_bm_id(redis_conn, posted_bm_id)
             current_bm_id = posted_bm_id
 
-        posted_alert_ref = entity["alert_ref"]["value"]
+        posted_alert_ref = entity["alert_ref"]["object"]
         if current_alert_ref_id is None:
             app.logger.info(f"No cached alert_ref; storing value {posted_alert_ref}.")
             set_alert_ref_id(redis_conn, posted_alert_ref)
@@ -275,6 +275,7 @@ def post_data():
         
         # Submit tasks for both PersonVehicleDetection and FloodSegmentation
         # entities_to_explain = ['PersonVehicleDetection']
+        # entities_to_explain = ['FloodSegmentation']
         entities_to_explain = ['FloodSegmentation', 'PersonVehicleDetection']
         
         task_ids = []
