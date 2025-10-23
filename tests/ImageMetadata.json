@@ -21,11 +21,11 @@
       },
       "bm_id": {
         "type": "Property",
-        "value": "a6be75af1b9b5ba7d102971f4f8048ec"
+        "value": "2fa4e1f4dbbe86744898e2d51ebed567"
       },
       "alert_ref": {
-        "type": "Relationship",
-        "object": "urn:ngsi-ld:tema:kamk:sv07:alert:brk:111"
+        "type": "Property",
+        "value": "urn:ngsi-ld:tema:kamk:sv07:alert:test:dmalian:25092025:112"
       },
       "bucket": {
         "type": "Property",
