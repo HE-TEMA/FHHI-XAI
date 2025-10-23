@@ -225,6 +225,8 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     model = model.to(active_device)
     model.eval()
     print(f"[plot_pcx_explanations_pidnet] using device={device_to_str(active_device)}")
+    if precision == "autocast_fp16" and active_device.type == "cuda":
+        model = model.half()
 
     # get layer names (unchanged)
     layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
@@ -364,6 +366,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
         data_p_device = data_p_device.half()
 
     # Getting top concepts/neurons for the given image in the given layer
+    channel_rels = channel_rels.float()
     topk = torch.topk(channel_rels[0], n_concepts)
     topk_ind = topk.indices.detach().cpu().numpy()
 

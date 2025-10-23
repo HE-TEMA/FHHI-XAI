@@ -158,7 +158,7 @@ class Explanator:
 
             transform = transforms.Compose([
                 transforms.ToTensor(),
-                transforms.Lambda(lambda x: x.to(self.dtype)),
+                transforms.Lambda(lambda x: x.half()),
             ])
 
             self._flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
@@ -203,6 +203,7 @@ class Explanator:
                 ref_imgs_path=ref_imgs_path,
                 output_dir_crp=output_dir_crp,
                 output_dir_pcx=output_dir_pcx,
+                precision="autocast_fp16",
             )
         finally:
             # Release the input tensor as soon as the attribution run finishes
