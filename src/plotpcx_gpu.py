@@ -49,18 +49,37 @@ from contextlib import nullcontext
 DEFAULT_DEVICE = resolve_device()
 
 PANEL_SIZE = (180, 180)  # (height, width) of each subplot content
-HEATMAP_CMAP_NAME = "pcx_concept_red"
+HEATMAP_CMAP_NAME = "pcx_focus_red"
 _HEATMAP_CMAP = LinearSegmentedColormap.from_list(
     HEATMAP_CMAP_NAME,
     [
         (0.0, "#ffffff"),
-        (0.05, "#ffeaea"),
-        (1.0, "#7a0000"),
+        (0.15, "#ffe5e5"),
+        (1.0, "#b00000"),
     ],
 )
 if HEATMAP_CMAP_NAME not in plt.colormaps():
     plt.register_cmap(HEATMAP_CMAP_NAME, _HEATMAP_CMAP)
 
+
+def _resize_array_to_panel(arr: np.ndarray) -> np.ndarray:
+    """Resize an HxWx3 array to the standard panel size."""
+    if arr is None:
+        return None
+    try:
+        arr_np = np.array(arr)
+        if arr_np.ndim == 2:
+            arr_np = np.stack([arr_np] * 3, axis=-1)
+        if arr_np.dtype != np.uint8:
+            arr_min, arr_max = arr_np.min(), arr_np.max()
+            if arr_max > arr_min:
+                arr_np = (255 * (arr_np - arr_min) / (arr_max - arr_min)).clip(0, 255)
+            arr_np = arr_np.astype(np.uint8)
+        pil = Image.fromarray(arr_np)
+        pil_resized = pil.resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
+        return np.asarray(pil_resized)
+    except Exception:
+        return arr
 
 def _coerce_device(device_like=None) -> torch.device:
     """Return a concrete torch.device for the given specification."""
@@ -666,12 +685,13 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # set up figure size depending on n_concepts actually used
     n_rows = max(3, effective_n_concepts)
     panel_cols = 6
-    fig_width = max(12.0, 2.2 * panel_cols)
-    fig_height = max(6.0, 2.2 * n_rows)
+    width_ratios = [1.0, 1.0, max(2.6, effective_n_refimgs * 0.85), 1.0, 1.0, 1.0]
+    fig_width = max(13.0, 1.8 * sum(width_ratios))
+    fig_height = max(6.0, 1.9 * n_rows)
     fig, axs = plt.subplots(
         n_rows,
         panel_cols,
-        gridspec_kw={'width_ratios': [1.0] * panel_cols},
+        gridspec_kw={'width_ratios': width_ratios, 'wspace': 0.15, 'hspace': 0.35},
         figsize=(fig_width, fig_height),
         dpi=200,
     )
@@ -685,14 +705,20 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     for r, row_axs in enumerate(axs):
         for c, ax in enumerate(row_axs):
             try:
-                ax.set_box_aspect(1)
+                if c == 2:
+                    ax.set_aspect('auto')
+                else:
+                    ax.set_box_aspect(1)
             except AttributeError:
-                ax.set_aspect('equal', adjustable='box')
+                if c == 2:
+                    ax.set_aspect('auto', adjustable='box')
+                else:
+                    ax.set_aspect('equal', adjustable='box')
             # Default off for empty cells; we'll enable as necessary
             try:
                 if c == 0:
                     if r == 0:
-                        ax.set_title("Input")
+                        ax.set_title("input")
                         overlay_img = img_with_mask.resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
                         ax.imshow(np.asarray(overlay_img))
                         try:
@@ -705,14 +731,14 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                         except Exception:
                             pass
                     elif r == 1:
-                        ax.set_title("Heatmap")
+                        ax.set_title("heatmap")
                         heatmap_img = _heatmap_to_array(attr_heatmap)
                         if heatmap_img is not None:
-                            ax.imshow(heatmap_img)
+                            ax.imshow(_resize_array_to_panel(heatmap_img))
                         else:
                             ax.axis("off")
                     elif r == 2:
-                        ax.set_title("Class likelihood")
+                        ax.set_title("class likelihood")
                         a = ax.hist(scores, bins=20, color='k')
                         # score_sample may be array; pick scalar if so
                         s_sample_val = float(score_sample) if np.ndim(score_sample) == 0 else float(score_sample[0])
@@ -740,18 +766,18 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 # Non-first column visualizations
                 if c == 1:
                     if r == 0:
-                        ax.set_title("Input\nlocalization")
+                        ax.set_title("cond. heatmap")
                     ch = cond_heatmap[r] if r < len(cond_heatmap) else None
                     heatmap_img = _heatmap_to_array(ch)
                     if heatmap_img is not None:
-                        ax.imshow(heatmap_img)
+                        ax.imshow(_resize_array_to_panel(heatmap_img))
                     else:
                         ax.axis("off")
                     ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(channel_rels_plot[0][topk_ind[r]] * 100):2.1f}%")
 
                 elif c == 2:
                     if r == 0:
-                        ax.set_title("Concept\nvisualization")
+                        ax.set_title("concept visualizations")
                     # build grid from ref images (PIL)
                     try:
                         concept_refs = ref_imgs[topk_ind[r]][:effective_n_refimgs]
@@ -769,7 +795,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                     bold_font = FontProperties(weight='bold')
 
                     if r == 0:
-                        ax.set_title("ΔR vs.\nprototype")
+                        ax.set_title("Difference to prot.")
                     blank_panel = np.ones((panel_h, panel_w, 3), dtype=np.uint8) * 255
                     ax.imshow(blank_panel)
                     try:
@@ -806,11 +832,11 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
                 elif c == 4:
                     if r == 0:
-                        ax.set_title("Prototype\nlocalization")
+                        ax.set_title("Prot localization")
                     proto_heatmap = cond_heatmap_p[r] if r < len(cond_heatmap_p) else None
                     proto_img = _heatmap_to_array(proto_heatmap)
                     if proto_img is not None:
-                        ax.imshow(proto_img)
+                        ax.imshow(_resize_array_to_panel(proto_img))
                         ax.yaxis.set_label_position("right")
                         ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(mean_cpu[topk_ind[r]] * 100):2.1f}%")
                     else:
@@ -818,27 +844,20 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
                 elif c == 5:
                     if r == 0:
-                        ax.set_title("Prototype")
+                        ax.set_title("prototype")
+                    try:
+                        prototype_panel = img_prototype.resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
+                        ax.imshow(np.asarray(prototype_panel))
                         try:
-                            fv.dataset = dataset
-                            img_sample = imgify(fv.get_data_sample(closest_sample_to_mean, preprocessing=False)[0][0])
-                            fv.dataset = dataset
-                            sample_panel = Image.fromarray(np.array(img_sample)).resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
-                            prototype_panel = img_prototype.resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
-                            ax.imshow(np.array(sample_panel))
-                            ax.imshow(np.asarray(prototype_panel))
-                            try:
-                                mask_proto_np = mask_prototype.detach().cpu().numpy() if torch.is_tensor(mask_prototype) else np.array(mask_prototype)
-                                if mask_proto_np.ndim > 2:
-                                    mask_proto_np = mask_proto_np.squeeze()
-                                mask_proto_np = (Image.fromarray((mask_proto_np > 0).astype(np.uint8) * 255)
-                                                 .resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.NEAREST))
-                                ax.contour(np.array(mask_proto_np, dtype=float), colors="black", linewidths=[1])
-                            except Exception:
-                                pass
+                            mask_proto_np = mask_prototype.detach().cpu().numpy() if torch.is_tensor(mask_prototype) else np.array(mask_prototype)
+                            if mask_proto_np.ndim > 2:
+                                mask_proto_np = mask_proto_np.squeeze()
+                            mask_proto_np = (Image.fromarray((mask_proto_np > 0).astype(np.uint8) * 255)
+                                             .resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.NEAREST))
+                            ax.contour(np.array(mask_proto_np, dtype=float), colors="black", linewidths=[1])
                         except Exception:
-                            ax.axis("off")
-                    else:
+                            pass
+                    except Exception:
                         ax.axis("off")
 
             except IndexError:
@@ -857,7 +876,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
             except Exception:
                 pass
 
-    plt.tight_layout()
+    fig.subplots_adjust(left=0.05, right=0.98, wspace=0.18, hspace=0.4)
     setattr(fig, "_n_refimgs_used", effective_n_refimgs)
     setattr(fig, "_n_concepts_used", effective_n_concepts)
     channel_rels_plot = None
@@ -950,8 +969,8 @@ def _heatmap_to_array(hm):
     if vmax <= 1e-12:
         return None
     normed = np.clip(hm_np / vmax, 0, 1)
-    normed = np.power(normed, 0.5)
-    normed[normed < 0.2] = 0
+    normed = np.power(normed, 0.7)
+    normed[normed < 0.08] = 0
     cmap = plt.get_cmap(HEATMAP_CMAP_NAME)
     rgba = cmap(normed)
     rgba[..., :3] *= 255
