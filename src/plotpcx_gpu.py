@@ -42,7 +42,7 @@ from src.minio_client import MinIOClient
 from LCRP.models import get_model
 from src.device_utils import resolve_device, device_to_str
 
-#import plotly.graph_objects as go
+from contextlib import nullcontext
 
 # Device handling: use torch.device everywhere
 DEFAULT_DEVICE = resolve_device()
@@ -84,6 +84,16 @@ def _align_heatmaps_to_imgHW(data_batch, heatmaps):
     else:
         return _align_one(heatmaps)
 
+def _to_cpu_like(obj):
+    """Recursively move tensors to CPU for compatibility with CPU-only render utilities."""
+    if torch.is_tensor(obj):
+        return obj.detach().cpu()
+    if isinstance(obj, np.ndarray):
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_cpu_like(o) for o in obj)
+    return obj
+
 
 def vis_opaque_img_border_safe(data_batch, heatmaps, rf, **kwargs):
     """
@@ -91,7 +101,9 @@ def vis_opaque_img_border_safe(data_batch, heatmaps, rf, **kwargs):
     to image (H,W) to avoid broadcasting errors.
     """
     heatmaps_aligned = _align_heatmaps_to_imgHW(data_batch, heatmaps)
-    return _vis_opaque_img_border_orig(data_batch, heatmaps_aligned, rf, **kwargs)
+    data_cpu = _to_cpu_like(data_batch)
+    heatmaps_cpu = _to_cpu_like(heatmaps_aligned)
+    return _vis_opaque_img_border_orig(data_cpu, heatmaps_cpu, rf, **kwargs)
 # -------------------------------------------------------------------------------
 
 
@@ -114,6 +126,80 @@ def _maybe_empty_cuda_cache(device_like=None):
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+def _resolve_layer_concept(fv, layer_name):
+    """Robustly locate the concept object associated with ``layer_name``."""
+    if not hasattr(fv, "layer_map"):
+        return None
+
+    layer_map = fv.layer_map
+    if isinstance(layer_map, dict):
+        return layer_map.get(layer_name)
+
+    if isinstance(layer_map, (list, tuple)):
+        for entry in layer_map:
+            if isinstance(entry, tuple) and len(entry) == 2:
+                key, value = entry
+                if key == layer_name:
+                    return value
+            elif hasattr(entry, "name") and entry.name == layer_name:
+                return entry
+
+    return None
+
+
+def _call_get_max_reference(fv, concept_ids, layer_name, composite, n_ref, plot_fn, batch_size: int):
+    """
+    Wrapper that prefers RF-aware references but gracefully falls back
+    to vanilla references if channel bookkeeping is incomplete.
+    """
+    concept_ids = list(concept_ids)
+
+    concept = _resolve_layer_concept(fv, layer_name)
+    rf_candidates, fallback_candidates = [], list(concept_ids)
+    if concept is not None and hasattr(concept, "c_n_map"):
+        rf_candidates = []
+        fallback_candidates = []
+        for cid in concept_ids:
+            try:
+                _ = concept.c_n_map[cid]
+                rf_candidates.append(cid)
+            except (IndexError, KeyError, TypeError):
+                fallback_candidates.append(cid)
+
+    def _fetch(ids, rf_flag, allow_retry=True):
+        if not ids:
+            return {}
+        try:
+            return fv.get_max_reference(
+                ids,
+                layer_name,
+                "relevance",
+                (0, n_ref),
+                composite=composite,
+                rf=rf_flag,
+                plot_fn=plot_fn,
+                batch_size=batch_size,
+            )
+        except IndexError as exc:
+            if rf_flag and allow_retry:
+                warnings.warn(
+                    f"Falling back to rf=False for concepts {ids} at layer '{layer_name}' "
+                    f"because receptive-field indices are inconsistent ({exc}).",
+                    RuntimeWarning,
+                )
+                return _fetch(ids, False, allow_retry=False)
+            raise
+
+    refs = {}
+    refs.update(_fetch(rf_candidates, True))
+    refs.update(_fetch(fallback_candidates, False))
+
+    if not refs:
+        raise IndexError(f"Unable to derive reference images for layer '{layer_name}' and concepts {concept_ids}.")
+
+    return refs
 
 
 def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_path="examples/output/ref_imgs_pidnet/"):
@@ -140,8 +226,15 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_
 
             if missing_keys:
                 print(f"Calculating and saving missing reference images for keys: {missing_keys}")
-                new_refs = fv.get_max_reference([int(k) for k in missing_keys], layer_name, "relevance", (0, n_ref),
-                                                composite=composite, rf=True, plot_fn=vis_opaque_img_border_safe)  # ← changed
+                new_refs = _call_get_max_reference(
+                    fv,
+                    [int(k) for k in missing_keys],
+                    layer_name,
+                    composite,
+                    n_ref,
+                    vis_opaque_img_border_safe,
+                    batch_size=1,
+                )
                 for key, images_list in new_refs.items():
                     group = f.create_group(str(key))
                     assert len(images_list) >= n_ref
@@ -151,12 +244,19 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_
                             arr = np.array(image)
                             group.create_dataset(str(idx), data=arr)
                             ref_imgs[key].append(image)
-                        else:
-                            print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
+                    else:
+                        print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
     else:
         print("Reference image file does not exist, calculating all.")
-        ref_imgs = fv.get_max_reference(topk_ind, layer_name, "relevance", (0, n_ref),
-                                        composite=composite, rf=True, plot_fn=vis_opaque_img_border_safe)  # ← changed
+        ref_imgs = _call_get_max_reference(
+            fv,
+            list(map(int, topk_ind)),
+            layer_name,
+            composite,
+            n_ref,
+            vis_opaque_img_border_safe,
+            batch_size=1,
+        )
         with h5py.File(ref_imgs_save_path, "w") as f:
             for key, images_list in ref_imgs.items():
                 group = f.create_group(str(key))
@@ -221,12 +321,13 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     scikit-learn, plotting and PIL operations.
     """
     active_device = _coerce_device(device)
+    non_blocking = active_device.type == "cuda"
+    amp_enabled = precision == "autocast_fp16" and active_device.type == "cuda"
+
     # ensure model in eval and on correct device
     model = model.to(active_device)
     model.eval()
     print(f"[plot_pcx_explanations_pidnet] using device={device_to_str(active_device)}")
-    if precision == "autocast_fp16" and active_device.type == "cuda":
-        model = model.half()
 
     # get layer names (unchanged)
     layer_names = get_layer_names(model, types=[torch.nn.Conv2d])
@@ -244,10 +345,19 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     )
     cc = ChannelConcept()
 
+    def _amp_ctx():
+        return torch.cuda.amp.autocast(dtype=torch.float16, cache_enabled=False) if amp_enabled else nullcontext()
+
     # Prepare the image tensor on the computation device
-    img = image_tensor[None, ...].to(active_device)
-    if precision == "autocast_fp16" and active_device.type == "cuda":
-        img = img.half()
+    img = image_tensor[None, ...].to(active_device, non_blocking=non_blocking)
+
+    # Decide how many reference images to use given current memory headroom
+    effective_n_refimgs = int(n_refimgs)
+    if active_device.type == "cuda":
+        total_mem = torch.cuda.get_device_properties(active_device).total_memory
+        reserved_mem = torch.cuda.memory_reserved(active_device)
+        if total_mem > 0 and reserved_mem / total_mem > 0.8:
+            effective_n_refimgs = max(4, min(effective_n_refimgs, 6))
 
     # Load attributions file (stored on disk as numpy)
     folder = f"{output_dir_pcx}/{layer_name}/"
@@ -256,9 +366,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # load to CPU then to device as needed; keep a CPU copy for sklearn
     attributions_np = np.load(folder + "attributions.npy")  # numpy on CPU
     # torch tensor on device for any tensor ops
-    attributions = torch.from_numpy(attributions_np).to(active_device)
-    if precision == "autocast_fp16" and active_device.type == "cuda":
-        attributions = attributions.half()
+    attributions = torch.from_numpy(attributions_np).to(active_device, non_blocking=non_blocking)
 
     data = img
     class_id = 1
@@ -309,7 +417,14 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     scores = gmm.score_samples(attributions_np)
     # raise ValueError(f"device: {device} data device {data.device} model device {model.device}")
     # Run attribution on the input image (this will happen on device)
-    attr = attribution(data.requires_grad_(), [{"y": class_id}], composite, record_layer=[layer_name], init_rel=1)
+    with _amp_ctx():
+        attr = attribution(
+            data.requires_grad_(),
+            [{"y": class_id}],
+            composite,
+            record_layer=[layer_name],
+            init_rel=1,
+        )
 
     # Channel (neuron) relevance on the given layer for this image
     rel_tensor = attr.relevances[layer_name].detach()
@@ -335,7 +450,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
     # Compute mean of the most likely prototype, then keep it as tensor on device for comparisons
     mean_np = gmm.means_[np.argmax(likelihoods)]
-    mean = torch.from_numpy(mean_np).to(active_device)
+    mean = torch.from_numpy(mean_np).to(active_device, non_blocking=non_blocking)
     if precision == "autocast_fp16" and active_device.type == "cuda":
         mean = mean.half()
 
@@ -356,22 +471,39 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
             joblib.dump((attributions.detach().cpu(), channel_rels.detach().cpu(), mean_cpu), "examples/output/pcx/gmm_data_fallback.pkl")
         except Exception:
             pass
+    del attributions
+    _maybe_empty_cuda_cache(active_device)
 
     # Closest prototype sample from dataset (data_p, target_p usually CPU tensors)
     data_p, target_p = dataset[closest_sample_to_mean]
     # keep a CPU copy of target_p for mask computations; move input data to device for model ops
     target_p_cpu = target_p.detach().cpu() if isinstance(target_p, torch.Tensor) else target_p
-    data_p_device = data_p[None].to(active_device)
-    if precision == "autocast_fp16" and active_device.type == "cuda":
-        data_p_device = data_p_device.half()
+    data_p_device = data_p[None].to(active_device, non_blocking=non_blocking)
 
     # Getting top concepts/neurons for the given image in the given layer
     channel_rels = channel_rels.float()
     topk = torch.topk(channel_rels[0], n_concepts)
     topk_ind = topk.indices.detach().cpu().numpy()
+    effective_n_concepts = min(len(topk_ind), n_concepts)
+    if effective_n_concepts == 0:
+        effective_n_concepts = 1
+    if active_device.type == "cuda":
+        total_mem = torch.cuda.get_device_properties(active_device).total_memory
+        reserved_mem = torch.cuda.memory_reserved(active_device)
+        if total_mem > 0:
+            usage = reserved_mem / total_mem
+            if usage > 0.85:
+                effective_n_concepts = min(effective_n_concepts, 1)
+            elif usage > 0.75:
+                effective_n_concepts = min(effective_n_concepts, 2)
+    topk_ind = topk_ind[:effective_n_concepts]
+    channel_rels_plot = channel_rels
+    del channel_rels
+    _maybe_empty_cuda_cache(active_device)
 
     # Get reference images (CPU / PIL)
-    ref_imgs = get_ref_images(fv, topk_ind, layer_name, composite=composite, n_ref=n_refimgs, ref_imgs_save_path=ref_imgs_path)
+    _maybe_empty_cuda_cache(active_device)
+    ref_imgs = get_ref_images(fv, topk_ind, layer_name, composite=composite, n_ref=effective_n_refimgs, ref_imgs_save_path=ref_imgs_path)
 
     # Calculate conditional heatmaps and prototype heatmaps (calls to attribution may return CPU or device tensors)
     conditions = [{"y": class_id, layer_name: int(c)} for c in topk_ind]
@@ -394,14 +526,58 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
         heatmaps = []
         for cond in conds:
             # Clone to avoid autograd graph accumulation and keep memory bounded
-            inp = input_tensor.detach().clone().requires_grad_()
-            result = attribution(inp, [cond], composite)
-            heatmaps.append(_to_cpu_container(_extract_heatmap(result)))
             _maybe_empty_cuda_cache(active_device)
+            inp = input_tensor.detach().clone().requires_grad_()
+            with _amp_ctx():
+                result = attribution(inp, [cond], composite)
+            heatmaps.append(_to_cpu_container(_extract_heatmap(result)))
+            del result
+            del inp
+            _maybe_empty_cuda_cache(active_device)
+            gc.collect()
         return heatmaps
 
-    cond_heatmap_p = _collect_conditional_heatmaps(data_p_device, conditions)
-    cond_heatmap = _collect_conditional_heatmaps(data, conditions)
+    try:
+        cond_heatmap_p = _collect_conditional_heatmaps(data_p_device, conditions)
+        data_p_cpu = data_p_device.detach().cpu()
+        del data_p_device
+        _maybe_empty_cuda_cache(active_device)
+
+        cond_heatmap = _collect_conditional_heatmaps(data, conditions)
+        data = None
+        img_cpu = img.detach().cpu()
+        del img
+        _maybe_empty_cuda_cache(active_device)
+    except torch.cuda.OutOfMemoryError:
+        if active_device.type == "cuda":
+            print("[plot_pcx_explanations_pidnet] CUDA OOM during conditional attribution; retrying on CPU.")
+            _maybe_empty_cuda_cache(active_device)
+            image_tensor_cpu = image_tensor.detach().cpu()
+            channel_rels_plot = channel_rels_plot.detach().cpu()
+            model_cpu = model.to(torch.device("cpu"))
+            model_cpu.eval()
+            try:
+                fig_cpu = plot_pcx_explanations_pidnet(
+                    model_name,
+                    model_cpu,
+                    dataset,
+                    image_tensor=image_tensor_cpu,
+                    n_concepts=n_concepts,
+                    n_refimgs=n_refimgs,
+                    num_prototypes=num_prototypes,
+                    layer_name=layer_name,
+                    ref_imgs_path=ref_imgs_path,
+                    output_dir_pcx=output_dir_pcx,
+                    output_dir_crp=output_dir_crp,
+                    device=torch.device("cpu"),
+                    precision="fp32",
+                )
+            finally:
+                model.to(active_device)
+                model.eval()
+            _maybe_empty_cuda_cache(active_device)
+            return fig_cpu
+        raise
 
     # Segmentation mask for plotting (CPU)
     # Use stored prediction to build mask
@@ -413,7 +589,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
         mask = torch.zeros((1, 1), dtype=torch.bool)
 
     # Reverse augmentation expects CPU tensors; move the original input to CPU for reverse_augmentation
-    sample_cpu_for_plot = dataset.reverse_augmentation(img.detach().cpu())
+    sample_cpu_for_plot = dataset.reverse_augmentation(img_cpu.float())
     # Resize mask if pidnet-style needs change
     if "pidnet" in model_name:
         # Convert mask to float and add batch + channel dims
@@ -449,22 +625,35 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
         mask_prototype = torch.zeros((1, 1), dtype=torch.bool)
 
     # Sample prototype image: reverse augmentation expects CPU input; use data_p_device.cpu()
+    sample_prototype_cpu = None
     try:
-        sample_prototype_cpu = dataset.reverse_augmentation(data_p_device.detach().cpu())
-        img_prototype = F.to_pil_image(draw_segmentation_masks(sample_prototype_cpu[:3, :, :][0], masks=mask_prototype, alpha=0.3, colors=["red"]))
+        sample_prototype_cpu = dataset.reverse_augmentation(data_p_cpu)
+        img_prototype = F.to_pil_image(
+            draw_segmentation_masks(
+                sample_prototype_cpu[:3, :, :][0],
+                masks=mask_prototype,
+                alpha=0.3,
+                colors=["red"],
+            )
+        )
     except Exception:
         # fallback
         try:
+            if sample_prototype_cpu is None:
+                sample_prototype_cpu = dataset.reverse_augmentation(data_p_cpu)
             img_prototype = F.to_pil_image(sample_prototype_cpu[:3, :, :][0])
         except Exception:
             img_prototype = Image.new("RGB", (150, 150), color=(128, 128, 128))
+    finally:
+        _maybe_empty_cuda_cache(active_device)
+        data_p_cpu = None
 
     # --- PLOTTING ---
-    # set up figure size depending on n_concepts
-    n_rows = n_concepts if n_concepts > 3 else 3
+    # set up figure size depending on n_concepts actually used
+    n_rows = max(3, effective_n_concepts)
     fig, axs = plt.subplots(n_rows, 6,
-                            gridspec_kw={'width_ratios': [1, 1, n_refimgs / 4, 1, 1, 1]},
-                            figsize=(4 * n_refimgs / 4, 1.8 * n_rows),
+                            gridspec_kw={'width_ratios': [1, 1, max(1, effective_n_refimgs) / 4, 1, 1, 1]},
+                            figsize=(max(4.0, effective_n_refimgs) , 1.8 * n_rows),
                             dpi=200)
     resize = torchvision.transforms.Resize((150, 150), antialias=True)
 
@@ -479,7 +668,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 if c == 0:
                     if r == 0:
                         ax.set_title("input")
-                        input_img = dataset.reverse_augmentation(img.detach().cpu()[0])
+                        input_img = dataset.reverse_augmentation(img_cpu[0])
                         # input_img is tensor (C,H,W) on CPU
                         try:
                             ax.imshow(input_img.permute(1, 2, 0).cpu().numpy())
@@ -537,15 +726,16 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                         ax.imshow(imgify(ch, symmetric=True, cmap="bwr", padding=True))
                     except Exception:
                         ax.axis("off")
-                    ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(channel_rels[0][topk_ind[r]] * 100):2.1f}%")
+                    ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(channel_rels_plot[0][topk_ind[r]] * 100):2.1f}%")
 
                 elif c == 2:
                     if r == 0:
                         ax.set_title("concept visualization")
                     # build grid from ref images (PIL)
                     try:
-                        grid = make_grid([resize(torch.from_numpy(np.asarray(i).copy()).permute((2, 0, 1))) for i in ref_imgs[topk_ind[r]]],
-                                         nrow=int(n_refimgs / 2), padding=0)
+                        concept_refs = ref_imgs[topk_ind[r]][:effective_n_refimgs]
+                        grid = make_grid([resize(torch.from_numpy(np.asarray(i).copy()).permute((2, 0, 1))) for i in concept_refs],
+                                         nrow=max(1, effective_n_refimgs // 2), padding=0)
                         grid = np.array(zimage.imgify(grid.detach().cpu()))
                         ax.imshow(grid)
                         ax.yaxis.set_label_position("right")
@@ -561,7 +751,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                         ax.set_title("Difference to prot.")
                     ax.imshow(np.zeros((150, 150, 3)), alpha=0.2)
                     try:
-                        delta_R = (channel_rels[0][topk_ind[r]].round(decimals=3) - mean_cpu[topk_ind[r]].round(decimals=3)) * 100
+                        delta_R = (channel_rels_plot[0][topk_ind[r]].round(decimals=3) - mean_cpu[topk_ind[r]].round(decimals=3)) * 100
                         delta_R = float(delta_R)
                     except Exception:
                         delta_R = 0.0
@@ -634,6 +824,14 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 pass
 
     plt.tight_layout()
+    setattr(fig, "_n_refimgs_used", effective_n_refimgs)
+    setattr(fig, "_n_concepts_used", effective_n_concepts)
+    channel_rels_plot = None
+    img_cpu = None
+    sample_cpu_for_plot = None
+    sample_prototype_cpu = None
+    gc.collect()
+    _maybe_empty_cuda_cache(active_device)
     return fig
 
 
