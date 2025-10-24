@@ -685,13 +685,13 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # set up figure size depending on n_concepts actually used
     n_rows = max(3, effective_n_concepts)
     panel_cols = 6
-    width_ratios = [1.0, 1.0, max(2.6, effective_n_refimgs * 0.85), 1.0, 1.0, 1.0]
-    fig_width = max(13.0, 1.8 * sum(width_ratios))
+    width_ratios = [1.0, 1.0, max(2.2, effective_n_refimgs * 0.8), 1.0, 1.0, 1.0]
+    fig_width = max(12.0, 1.6 * sum(width_ratios))
     fig_height = max(6.0, 1.9 * n_rows)
     fig, axs = plt.subplots(
         n_rows,
         panel_cols,
-        gridspec_kw={'width_ratios': width_ratios, 'wspace': 0.15, 'hspace': 0.35},
+        gridspec_kw={'width_ratios': width_ratios, 'wspace': 0.05, 'hspace': 0.35},
         figsize=(fig_width, fig_height),
         dpi=200,
     )
