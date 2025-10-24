@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.font_manager import FontProperties
 from PIL import Image
 #import plotly
@@ -46,6 +47,19 @@ from contextlib import nullcontext
 
 # Device handling: use torch.device everywhere
 DEFAULT_DEVICE = resolve_device()
+
+PANEL_SIZE = (180, 180)  # (height, width) of each subplot content
+HEATMAP_CMAP_NAME = "pcx_concept_red"
+_HEATMAP_CMAP = LinearSegmentedColormap.from_list(
+    HEATMAP_CMAP_NAME,
+    [
+        (0.0, "#ffffff"),
+        (0.05, "#ffeaea"),
+        (1.0, "#7a0000"),
+    ],
+)
+if HEATMAP_CMAP_NAME not in plt.colormaps():
+    plt.register_cmap(HEATMAP_CMAP_NAME, _HEATMAP_CMAP)
 
 
 def _coerce_device(device_like=None) -> torch.device:
@@ -612,7 +626,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
         try:
             img_with_mask = F.to_pil_image(sample_cpu_for_plot[:3, :, :][0])
         except Exception:
-            img_with_mask = Image.new("RGB", (150, 150), color=(128, 128, 128))
+            img_with_mask = Image.new("RGB", (PANEL_SIZE[1], PANEL_SIZE[0]), color=(128, 128, 128))
 
     # Prototype mask: ensure CPU tensor
     try:
@@ -643,7 +657,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 sample_prototype_cpu = dataset.reverse_augmentation(data_p_cpu)
             img_prototype = F.to_pil_image(sample_prototype_cpu[:3, :, :][0])
         except Exception:
-            img_prototype = Image.new("RGB", (150, 150), color=(128, 128, 128))
+            img_prototype = Image.new("RGB", (PANEL_SIZE[1], PANEL_SIZE[0]), color=(128, 128, 128))
     finally:
         _maybe_empty_cuda_cache(active_device)
         data_p_cpu = None
@@ -651,11 +665,18 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # --- PLOTTING ---
     # set up figure size depending on n_concepts actually used
     n_rows = max(3, effective_n_concepts)
-    fig, axs = plt.subplots(n_rows, 6,
-                            gridspec_kw={'width_ratios': [1, 1, max(1, effective_n_refimgs) / 4, 1, 1, 1]},
-                            figsize=(max(4.0, effective_n_refimgs) , 1.8 * n_rows),
-                            dpi=200)
-    resize = torchvision.transforms.Resize((150, 150), antialias=True)
+    panel_cols = 6
+    fig_width = max(12.0, 2.2 * panel_cols)
+    fig_height = max(6.0, 2.2 * n_rows)
+    fig, axs = plt.subplots(
+        n_rows,
+        panel_cols,
+        gridspec_kw={'width_ratios': [1.0] * panel_cols},
+        figsize=(fig_width, fig_height),
+        dpi=200,
+    )
+    resize = torchvision.transforms.Resize(PANEL_SIZE, antialias=True)
+    panel_h, panel_w = PANEL_SIZE
 
     # Ensure axs is 2D array for consistent indexing
     if axs.ndim == 1:
@@ -663,35 +684,35 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
     for r, row_axs in enumerate(axs):
         for c, ax in enumerate(row_axs):
+            try:
+                ax.set_box_aspect(1)
+            except AttributeError:
+                ax.set_aspect('equal', adjustable='box')
             # Default off for empty cells; we'll enable as necessary
             try:
                 if c == 0:
                     if r == 0:
-                        ax.set_title("input")
-                        input_img = dataset.reverse_augmentation(img_cpu[0])
-                        # input_img is tensor (C,H,W) on CPU
+                        ax.set_title("Input")
+                        overlay_img = img_with_mask.resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
+                        ax.imshow(np.asarray(overlay_img))
                         try:
-                            ax.imshow(input_img.permute(1, 2, 0).cpu().numpy())
-                        except Exception:
-                            # fallback: convert using torchvision
-                            ax.imshow(np.array(F.to_pil_image(input_img)))
-                        # overlay the segmentation pil image (already created)
-                        ax.imshow(np.asarray(img_with_mask))
-                        try:
-                            ax.contour(mask.numpy(), colors="black", linewidths=[1])
+                            mask_np = mask.detach().cpu().numpy()
+                            if mask_np.ndim > 2:
+                                mask_np = mask_np.squeeze()
+                            mask_np = (Image.fromarray((mask_np > 0).astype(np.uint8) * 255)
+                                       .resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.NEAREST))
+                            ax.contour(np.array(mask_np, dtype=float), colors="black", linewidths=[1])
                         except Exception:
                             pass
                     elif r == 1:
-                        ax.set_title("heatmap")
-                        try:
-                            if attr_heatmap is None:
-                                raise ValueError("missing heatmap")
-                            heatmap_img = imgify(attr_heatmap, cmap="bwr", symmetric=True)
+                        ax.set_title("Heatmap")
+                        heatmap_img = _heatmap_to_array(attr_heatmap)
+                        if heatmap_img is not None:
                             ax.imshow(heatmap_img)
-                        except Exception:
+                        else:
                             ax.axis("off")
                     elif r == 2:
-                        ax.set_title("class likelihood")
+                        ax.set_title("Class likelihood")
                         a = ax.hist(scores, bins=20, color='k')
                         # score_sample may be array; pick scalar if so
                         s_sample_val = float(score_sample) if np.ndim(score_sample) == 0 else float(score_sample[0])
@@ -719,18 +740,18 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 # Non-first column visualizations
                 if c == 1:
                     if r == 0:
-                        ax.set_title("Input localization")
-                    try:
-                        ch = cond_heatmap[r]
-                        # ensure it's CPU numpy or tensor
-                        ax.imshow(imgify(ch, symmetric=True, cmap="bwr", padding=True))
-                    except Exception:
+                        ax.set_title("Input\nlocalization")
+                    ch = cond_heatmap[r] if r < len(cond_heatmap) else None
+                    heatmap_img = _heatmap_to_array(ch)
+                    if heatmap_img is not None:
+                        ax.imshow(heatmap_img)
+                    else:
                         ax.axis("off")
                     ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(channel_rels_plot[0][topk_ind[r]] * 100):2.1f}%")
 
                 elif c == 2:
                     if r == 0:
-                        ax.set_title("concept visualization")
+                        ax.set_title("Concept\nvisualization")
                     # build grid from ref images (PIL)
                     try:
                         concept_refs = ref_imgs[topk_ind[r]][:effective_n_refimgs]
@@ -748,8 +769,9 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                     bold_font = FontProperties(weight='bold')
 
                     if r == 0:
-                        ax.set_title("Difference to prot.")
-                    ax.imshow(np.zeros((150, 150, 3)), alpha=0.2)
+                        ax.set_title("ΔR vs.\nprototype")
+                    blank_panel = np.ones((panel_h, panel_w, 3), dtype=np.uint8) * 255
+                    ax.imshow(blank_panel)
                     try:
                         delta_R = (channel_rels_plot[0][topk_ind[r]].round(decimals=3) - mean_cpu[topk_ind[r]].round(decimals=3)) * 100
                         delta_R = float(delta_R)
@@ -766,40 +788,52 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                         textstr = f"ΔR = {delta_R:+2.1f}%\n✓ similar"
                         edge_color = "#00cc00"
 
-                    rect = patches.Rectangle((0, 0), 150, 150, linewidth=3, edgecolor=edge_color, facecolor='white')
+                    rect = patches.Rectangle((0, 0), panel_w, panel_h, linewidth=3, edgecolor=edge_color, facecolor='white')
                     ax.add_patch(rect)
                     lines = textstr.split('\n')
                     symbol_line = lines[1] if len(lines) > 1 else ""
                     text_line = lines[0] if lines else ""
 
-                    ax.text(75, 60, text_line, fontsize=10, verticalalignment='center', horizontalalignment='center', bbox=dict(facecolor=edge_color, edgecolor='none'))
-                    ax.text(75, 90, symbol_line, fontproperties=bold_font, verticalalignment='center', horizontalalignment='center', color=edge_color)
+                    ax.text(panel_w / 2, panel_h * 0.35, text_line, fontsize=10,
+                            verticalalignment='center', horizontalalignment='center',
+                            bbox=dict(facecolor=edge_color, edgecolor='none'))
+                    ax.text(panel_w / 2, panel_h * 0.6, symbol_line, fontproperties=bold_font,
+                            verticalalignment='center', horizontalalignment='center', color=edge_color)
 
-                    ax.set_xlim([0, 150])
-                    ax.set_ylim([0, 150])
+                    ax.set_xlim([0, panel_w])
+                    ax.set_ylim([0, panel_h])
                     ax.axis("off")
 
                 elif c == 4:
                     if r == 0:
-                        ax.set_title("Prot localization")
-                    try:
-                        ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True))
+                        ax.set_title("Prototype\nlocalization")
+                    proto_heatmap = cond_heatmap_p[r] if r < len(cond_heatmap_p) else None
+                    proto_img = _heatmap_to_array(proto_heatmap)
+                    if proto_img is not None:
+                        ax.imshow(proto_img)
                         ax.yaxis.set_label_position("right")
                         ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(mean_cpu[topk_ind[r]] * 100):2.1f}%")
-                    except Exception:
+                    else:
                         ax.axis("off")
 
                 elif c == 5:
                     if r == 0:
-                        ax.set_title("prototype")
+                        ax.set_title("Prototype")
                         try:
                             fv.dataset = dataset
                             img_sample = imgify(fv.get_data_sample(closest_sample_to_mean, preprocessing=False)[0][0])
                             fv.dataset = dataset
-                            ax.imshow(img_sample)
-                            ax.imshow(np.asarray(img_prototype))
+                            sample_panel = Image.fromarray(np.array(img_sample)).resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
+                            prototype_panel = img_prototype.resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.BILINEAR)
+                            ax.imshow(np.array(sample_panel))
+                            ax.imshow(np.asarray(prototype_panel))
                             try:
-                                ax.contour(mask_prototype, colors="black", linewidths=[1])
+                                mask_proto_np = mask_prototype.detach().cpu().numpy() if torch.is_tensor(mask_prototype) else np.array(mask_prototype)
+                                if mask_proto_np.ndim > 2:
+                                    mask_proto_np = mask_proto_np.squeeze()
+                                mask_proto_np = (Image.fromarray((mask_proto_np > 0).astype(np.uint8) * 255)
+                                                 .resize((PANEL_SIZE[1], PANEL_SIZE[0]), Image.NEAREST))
+                                ax.contour(np.array(mask_proto_np, dtype=float), colors="black", linewidths=[1])
                             except Exception:
                                 pass
                         except Exception:
@@ -879,3 +913,46 @@ def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.cente
     outliers = [i for i, score in enumerate(scores) if score < lower_threshold or score > upper_threshold]
 
     return outliers, scores, lower_threshold, upper_threshold
+def _heatmap_to_array(hm):
+    """Convert a heatmap tensor/list into an RGB numpy array using the project colormap."""
+    if hm is None:
+        return None
+    if isinstance(hm, (list, tuple)):
+        for candidate in hm:
+            arr = _heatmap_to_array(candidate)
+            if arr is not None:
+                return arr
+        return None
+    if torch.is_tensor(hm):
+        hm = hm.detach().cpu()
+        if hm.ndim == 4 and hm.shape[0] == 1:
+            hm = hm[0]
+        if hm.ndim == 3 and hm.shape[0] == 1:
+            hm = hm[0]
+    elif isinstance(hm, np.ndarray):
+        hm = np.array(hm)
+    elif isinstance(hm, Image.Image):
+        return np.asarray(hm)
+    try:
+        hm_np = np.array(hm, dtype=float)
+    except Exception:
+        return None
+
+    hm_np = np.nan_to_num(hm_np)
+    while hm_np.ndim > 2 and hm_np.shape[0] == 1:
+        hm_np = hm_np[0]
+    hm_np = np.squeeze(hm_np)
+    if hm_np.ndim != 2:
+        return None
+
+    hm_np = np.abs(hm_np)
+    vmax = np.percentile(hm_np, 99)
+    if vmax <= 1e-12:
+        return None
+    normed = np.clip(hm_np / vmax, 0, 1)
+    normed = np.power(normed, 0.5)
+    normed[normed < 0.2] = 0
+    cmap = plt.get_cmap(HEATMAP_CMAP_NAME)
+    rgba = cmap(normed)
+    rgba[..., :3] *= 255
+    return rgba[..., :3].astype(np.uint8)

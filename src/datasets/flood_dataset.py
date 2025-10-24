@@ -29,7 +29,7 @@ class FloodDataset(Dataset):
         root_dir: str,
         split: str = "train",
         transform=None,
-        image_size: Tuple[int, int] = (640, 640),  # (H, W)
+        image_size: Tuple[int, int] = (1280, 720),  # (H, W)
         strict_pairing: bool = False,
         mask_suffix_patterns: Optional[List[str]] = None,
     ):
