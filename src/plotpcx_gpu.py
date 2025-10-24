@@ -685,13 +685,13 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # set up figure size depending on n_concepts actually used
     n_rows = max(3, effective_n_concepts)
     panel_cols = 6
-    width_ratios = [1.0, 1.0, max(2.2, effective_n_refimgs * 0.8), 1.0, 1.0, 1.0]
-    fig_width = max(12.0, 1.6 * sum(width_ratios))
+    width_ratios = [1.0, 1.0, max(2.0, effective_n_refimgs * 0.78), 0.9, 1.0, 1.0]
+    fig_width = max(11.0, 1.45 * sum(width_ratios))
     fig_height = max(6.0, 1.9 * n_rows)
     fig, axs = plt.subplots(
         n_rows,
         panel_cols,
-        gridspec_kw={'width_ratios': width_ratios, 'wspace': 0.05, 'hspace': 0.35},
+        gridspec_kw={'width_ratios': width_ratios, 'wspace': 0.01, 'hspace': 0.32},
         figsize=(fig_width, fig_height),
         dpi=200,
     )
@@ -876,7 +876,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
             except Exception:
                 pass
 
-    fig.subplots_adjust(left=0.05, right=0.98, wspace=0.18, hspace=0.4)
+    fig.subplots_adjust(left=0.05, right=0.98, wspace=0.02, hspace=0.33)
     setattr(fig, "_n_refimgs_used", effective_n_refimgs)
     setattr(fig, "_n_concepts_used", effective_n_concepts)
     channel_rels_plot = None
