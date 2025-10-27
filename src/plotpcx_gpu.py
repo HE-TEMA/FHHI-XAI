@@ -48,7 +48,7 @@ from contextlib import nullcontext
 # Device handling: use torch.device everywhere
 DEFAULT_DEVICE = resolve_device()
 
-PANEL_SIZE = (220, 220)  # (height, width) of each subplot content
+PANEL_SIZE = (180, 180)  # (height, width) of each subplot content
 HEATMAP_CMAP_NAME = "pcx_focus_red"
 _HEATMAP_CMAP = LinearSegmentedColormap.from_list(
     HEATMAP_CMAP_NAME,

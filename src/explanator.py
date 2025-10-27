@@ -22,6 +22,11 @@ from src.entities import get_person_vehicle_detection_explanation_entity, get_fl
 from src.minio_client import FHHI_MINIO_BUCKET
 from src.memory_logging import log_cuda_memory
 
+
+def _empty_cuda_cache():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
 class Explanator:
     """Class that stores all loaded models together with all relevant data for generating CRP explanations.
 
@@ -32,7 +37,7 @@ class Explanator:
         self.logger = logger
         # General setup
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.dtype = torch.float16
+        self.dtype = torch.float32
 
         # Log initial memory state
         log_cuda_memory(self.logger, "INIT")
@@ -125,7 +130,7 @@ class Explanator:
 
         log_cuda_memory(self.logger, f"AFTER EXPLAIN {entity_type}")
         # Clear unnecessary tensors from cache
-        torch.cuda.empty_cache()
+        _empty_cuda_cache()
 
         return result
 
@@ -156,9 +161,10 @@ class Explanator:
         if self._flood_dataset is None:
             flood_data_path = os.path.join(self.project_root, "data", "General_Flood_v3")
 
+            target_dtype = self.dtype
             transform = transforms.Compose([
                 transforms.ToTensor(),
-                transforms.Lambda(lambda x: x.half()),
+                transforms.Lambda(lambda x: x.to(dtype=target_dtype) if isinstance(x, torch.Tensor) else x),
             ])
 
             self._flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
@@ -190,6 +196,8 @@ class Explanator:
         print("Shape after batch dimension:", image_tensor.shape)
 
         log_cuda_memory(self.logger, "BEFORE EXPLANATION GENERATION")
+        used_n_refimgs = n_refimgs
+        used_n_concepts = n_concepts
         try:
             explanation_fig = plot_pcx_explanations_pidnet(
                 model_name,
@@ -203,12 +211,14 @@ class Explanator:
                 ref_imgs_path=ref_imgs_path,
                 output_dir_crp=output_dir_crp,
                 output_dir_pcx=output_dir_pcx,
-                precision="autocast_fp16" if self.dtype == torch.float16 else "fp32",
+                precision="autocast_fp16" if (self.device == "cuda" and torch.cuda.is_available()) else "fp32",
             )
+            used_n_refimgs = getattr(explanation_fig, "_n_refimgs_used", n_refimgs)
+            used_n_concepts = getattr(explanation_fig, "_n_concepts_used", n_concepts)
         finally:
             # Release the input tensor as soon as the attribution run finishes
             del image_tensor
-            torch.cuda.empty_cache()
+            _empty_cuda_cache()
 
         # fig is returned implicitly as part of this function; adapt if needed
         log_cuda_memory(self.logger, "AFTER EXPLANATION GENERATION")
@@ -227,8 +237,8 @@ class Explanator:
             explanation_image_bucket=FHHI_MINIO_BUCKET,
             explanation_image_filename=explanation_image_filename,
             class_id=class_id,
-            n_concepts=n_concepts,
-            n_refimgs=n_refimgs,
+            n_concepts=used_n_concepts,
+            n_refimgs=used_n_refimgs,
             layer=layer_name,
             mode="relevance",
             bm_id=bm_id,
@@ -236,7 +246,7 @@ class Explanator:
         )
 
         log_cuda_memory(self.logger, "FLOOD_SEG END")
-        torch.cuda.empty_cache()
+        _empty_cuda_cache()
 
         return explanation_entity, [explanation_img], [explanation_image_filename]
 
@@ -337,7 +347,7 @@ class Explanator:
             log_cuda_memory(self.logger, f"BEFORE BOX {prediction_num}")
 
             # Clear cache before each box processing
-            torch.cuda.empty_cache()
+            _empty_cuda_cache()
 
             # CRP visualization
             # explanation_fig = plot_one_image_explanation(
@@ -372,7 +382,7 @@ class Explanator:
 
             # Force garbage collection after each box
             gc.collect()
-            torch.cuda.empty_cache()
+            _empty_cuda_cache()
             explanation_boxes.append(exp_box)
 
         explanation_entity = get_person_vehicle_detection_explanation_entity(
@@ -392,7 +402,7 @@ class Explanator:
         self.logger.warning(f"explanation_entity: {explanation_entity}")
 
         log_cuda_memory(self.logger, "PERSON_VEHICLE END")
-        torch.cuda.empty_cache()
+        _empty_cuda_cache()
 
         return explanation_entity, explanation_images, explanation_image_filenames
 

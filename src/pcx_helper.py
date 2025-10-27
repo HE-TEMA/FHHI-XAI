@@ -2,9 +2,29 @@ import os
 import sys
 import h5py
 import numpy as np
+import torch
+
 sys.path.append("..")
 from PIL import Image
 from LCRP.utils.render import vis_opaque_img_border
+
+
+def _to_cpu_array(obj):
+    """Recursively move tensors to CPU numpy arrays for safe plotting."""
+    if torch.is_tensor(obj):
+        return obj.detach().cpu()
+    if isinstance(obj, np.ndarray):
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_cpu_array(o) for o in obj)
+    return obj
+
+
+def vis_opaque_img_border_safe(data_batch, heatmaps, rf, **kwargs):
+    """Ensure vis_opaque_img_border always receives CPU tensors/arrays."""
+    data_cpu = _to_cpu_array(data_batch)
+    heatmaps_cpu = _to_cpu_array(heatmaps)
+    return vis_opaque_img_border(data_cpu, heatmaps_cpu, rf, **kwargs)
 
 
 def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_imgs_save_path="output/ref_imgs/"):
@@ -28,8 +48,16 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
 
             if missing_keys:
                 print(f"Calculating and saving missing reference images for keys: {missing_keys}")
-                new_refs = fv.get_max_reference([int(k) for k in missing_keys], layer_name, "relevance", (0, n_ref),
-                                                composite=composite, rf=True, plot_fn=vis_opaque_img_border, batch_size=2)
+                new_refs = fv.get_max_reference(
+                    [int(k) for k in missing_keys],
+                    layer_name,
+                    "relevance",
+                    (0, n_ref),
+                    composite=composite,
+                    rf=True,
+                    plot_fn=vis_opaque_img_border_safe,
+                    batch_size=2,
+                )
                 for key, images_list in new_refs.items():
                     group = f.create_group(str(key))
                     assert len(images_list) >= n_ref
@@ -43,8 +71,15 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
                             print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
     else:
         print("Reference image file does not exist, calculating all.")
-        ref_imgs = fv.get_max_reference(topk_ind, layer_name, "relevance", (0, n_ref),
-                                        composite=composite, rf=True, plot_fn=vis_opaque_img_border)
+        ref_imgs = fv.get_max_reference(
+            topk_ind,
+            layer_name,
+            "relevance",
+            (0, n_ref),
+            composite=composite,
+            rf=True,
+            plot_fn=vis_opaque_img_border_safe,
+        )
         with h5py.File(ref_imgs_save_path, "w") as f:
             for key, images_list in ref_imgs.items():
                 group = f.create_group(str(key))
