@@ -24,7 +24,6 @@ from torchvision.utils import draw_segmentation_masks, make_grid
 
 import zennit.image as zimage
 from sklearn.mixture import GaussianMixture
-from sklearn.exceptions import InconsistentVersionWarning
 
 from crp.helper import get_layer_names
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
@@ -416,47 +415,16 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     data = img
     class_id = 1
 
-    # GMM cache paths
-    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
-    prototype_cache_path = f'output/pcx/prototype_gmms_cache_{layer_name}.pkl'
+    # Always refit the GMM so prototype selection reflects the current run
+    attributions_for_gmm = attributions_np  # stay on CPU for sklearn
+    gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions_for_gmm)
 
-    # Use CPU numpy arrays for sklearn GaussianMixture
-    def _safe_joblib_load(path):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", InconsistentVersionWarning)
-            try:
-                return joblib.load(path)
-            except InconsistentVersionWarning:
-                return None
-
-    gmm = None
-    prototype_gmms = None
-    if os.path.exists(cache_path) and os.path.exists(prototype_cache_path):
-        gmm = _safe_joblib_load(cache_path)
-        prototype_gmms = _safe_joblib_load(prototype_cache_path) if gmm is not None else None
-
-    if gmm is None or prototype_gmms is None:
-        # Drop potentially incompatible caches and refit for the current sklearn version
-        try:
-            if os.path.exists(cache_path):
-                os.remove(cache_path)
-            if os.path.exists(prototype_cache_path):
-                os.remove(prototype_cache_path)
-        except OSError:
-            pass
-        # Fit GMM on CPU copy of attributions
-        attributions_for_gmm = attributions_np  # already CPU numpy
-        gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions_for_gmm)
-        joblib.dump(gmm, cache_path)
-
-        # Build prototype gmms based on gmm params (keeps sklearn objects on CPU)
-        prototype_gmms = [GaussianMixture(n_components=1, covariance_type='full',) for _ in range(num_prototypes)]
-        for p, g_ in enumerate(prototype_gmms):
-            g_._set_parameters([
-                param[p:p + 1] if j > 0 else param[p:p + 1] * 0 + 1
-                for j, param in enumerate(gmm._get_parameters())
-            ])
-        joblib.dump(prototype_gmms, prototype_cache_path)
+    prototype_gmms = [GaussianMixture(n_components=1, covariance_type='full',) for _ in range(num_prototypes)]
+    for p, g_ in enumerate(prototype_gmms):
+        g_._set_parameters([
+            param[p:p + 1] if j > 0 else param[p:p + 1] * 0 + 1
+            for j, param in enumerate(gmm._get_parameters())
+        ])
 
     # Calculate scores for the dataset (CPU)
     scores = gmm.score_samples(attributions_np)
@@ -717,20 +685,14 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     # set up figure size depending on n_concepts actually used
     n_rows = max(3, effective_n_concepts)
     panel_cols = 6
-    width_ratios = [
-        1.2,
-        1.15,
-        max(3.4, effective_n_refimgs * 1.2),
-        1.15,
-        1.05,
-        1.05,
-    ]
-    fig_width = max(14.2, 1.6 * sum(width_ratios))
+    concept_col_ratio = np.clip(effective_n_refimgs * 0.6, 3.6, 6.2)
+    width_ratios = [1.2, 1.15, concept_col_ratio, 1.15, 1.05, 1.05]
+    fig_width = max(14.2, 1.35 * sum(width_ratios))
     fig_height = max(6.6, 2.05 * n_rows)
     fig, axs = plt.subplots(
         n_rows,
         panel_cols,
-        gridspec_kw={'width_ratios': width_ratios, 'wspace': 0.16, 'hspace': 0.36},
+        gridspec_kw={'width_ratios': width_ratios, 'wspace': 0.08, 'hspace': 0.36},
         figsize=(fig_width, fig_height),
         dpi=200,
     )
@@ -959,14 +921,8 @@ def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.cente
     attributions_np = np.load(folder + "attributions.npy")
     attributions = torch.from_numpy(attributions_np).to(active_device)
 
-    cache_path = f'examples/output/pcx/gmm_cache_{layer_name}.pkl'
-
-    if os.path.exists(cache_path):
-        gmm = joblib.load(cache_path)
-    else:
-        # fit on CPU numpy
-        gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions_np)
-        joblib.dump(gmm, cache_path)
+    # Refit GMM so outlier scores reflect latest statistics
+    gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions_np)
 
     # compute log-likelihood scores on CPU
     scores = gmm.score_samples(attributions_np)

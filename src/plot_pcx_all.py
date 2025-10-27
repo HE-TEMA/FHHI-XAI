@@ -141,18 +141,8 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_con
     
     # Training GMM based on relevances if not done already
     # Initialize Gaussian Mixture Model (GMM) with specified number of prototypes as components
-    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
-    prototype_cache_path = f'output/pcx/prototype_gmms_cache_{layer_name}.pkl'
-
-    if os.path.exists(cache_path) and os.path.exists(prototype_cache_path):
-        # Load the GMM and individual GMMs from the cache files
-        gmm = joblib.load(cache_path)
-        prototype_gmms = joblib.load(prototype_cache_path)
-    else:
-        # Fit the GMM
-        gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions)
-        # Save the GMM and individual GMMs to cache files
-        joblib.dump(gmm, cache_path)
+    # Fit the GMM fresh each run so prototypes reflect current statistics
+    gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions)
 
     # Create individual GMMs for each prototype and store them in a list
     prototype_gmms = [GaussianMixture(n_components=1, covariance_type='full',) for p in range(num_prototypes)]
@@ -162,7 +152,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor, n_con
             for j, param in enumerate(gmm._get_parameters())])
 
     # Calculating scores of the dataset, used further for outlier detection
-    scores = gmm.score_samples(attributions)
+    scores = gmm.score_samples(attributions.numpy())
     
     # Running attribution on the input image
     attr = attribution(data.requires_grad_(), condition, composite, record_layer=[layer_name],
@@ -377,16 +367,10 @@ def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.cente
     # Load or compute the GMM
     folder = f"{output_dir_pcx}/{layer_name}/"
     attributions = torch.from_numpy(np.load(folder + "attributions.npy"))
-    cache_path = f'output/pcx/gmm_cache_{layer_name}.pkl'
-
-    if os.path.exists(cache_path):
-        gmm = joblib.load(cache_path)
-    else:
-        gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions)
-        joblib.dump(gmm, cache_path)
+    gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions.numpy())
 
     #log-likelihood scores
-    scores = gmm.score_samples(attributions)
+    scores = gmm.score_samples(attributions.numpy())
 
     # Define outlier thresholds (e.g., 1st and 99th percentiles)
     lower_threshold = np.percentile(scores, 1)

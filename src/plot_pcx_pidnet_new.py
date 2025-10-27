@@ -3,7 +3,6 @@ import sys
 import gc
 import time
 import h5py
-import joblib
 import copy
 import logging
 from typing import Dict, List, Tuple, Optional
@@ -259,31 +258,24 @@ def plot_one_image_pcx_explanation(
     attributions_np = np.load(attr_path)  # shape [N, C]
     print(f"[gmm] attributions shape={attributions_np.shape}")
 
-    # GMM caches
-    cache_path = f'output/pcx/gmms/gmm_cache_{layer}.pkl'
-    prototype_cache_path = f'output/pcx/gmm_prototypes/prototype_gmms_cache_{layer}.pkl'
-
-    if os.path.exists(cache_path) and os.path.exists(prototype_cache_path):
-        print("[gmm] loading cached GMMs")
-        gmm: GaussianMixture = joblib.load(cache_path)
-        prototype_gmms: List[GaussianMixture] = joblib.load(prototype_cache_path)
-    else:
-        print("[gmm] fitting new GMM")
-        gmm = GaussianMixture(n_components=num_prototypes, reg_covar=1e-5, random_state=0).fit(attributions_np)
-        joblib.dump(gmm, cache_path)
-        print("[gmm] building prototype component GMMs")
-        prototype_gmms = [GaussianMixture(n_components=1, covariance_type='full') for _ in range(num_prototypes)]
-        params = gmm._get_parameters()  # weights, means, covariances, precisions_cholesky (impl-dependent)
-        for p, g_ in enumerate(prototype_gmms):
-            # copy single-component parameters into 1-comp GMM
-            g_._set_parameters([
-                params[0][p:p+1] * 0 + 1,     # weights_ -> set to 1
-                params[1][p:p+1],             # means_
-                params[2][p:p+1],             # covariances_ (for full)
-                *([params[3][p:p+1]] if len(params) > 3 else [])
-            ])
-        joblib.dump(prototype_gmms, prototype_cache_path)
-        print("[gmm] GMMs cached")
+    # Fit fresh GMMs each run so prototype selection adapts to current statistics
+    print("[gmm] fitting GMM for current run")
+    gmm: GaussianMixture = GaussianMixture(
+        n_components=num_prototypes, reg_covar=1e-5, random_state=0
+    ).fit(attributions_np)
+    print("[gmm] building prototype component GMMs")
+    prototype_gmms: List[GaussianMixture] = [
+        GaussianMixture(n_components=1, covariance_type='full') for _ in range(num_prototypes)
+    ]
+    params = gmm._get_parameters()  # weights, means, covariances, precisions_cholesky (impl-dependent)
+    for p, g_ in enumerate(prototype_gmms):
+        # copy single-component parameters into 1-comp GMM
+        g_._set_parameters([
+            params[0][p:p+1] * 0 + 1,     # weights_ -> set to 1
+            params[1][p:p+1],             # means_
+            params[2][p:p+1],             # covariances_ (for full)
+            *([params[3][p:p+1]] if len(params) > 3 else [])
+        ])
 
     # Likelihoods and prototype selection
     print("[gmm] scoring full dataset and current sample")
