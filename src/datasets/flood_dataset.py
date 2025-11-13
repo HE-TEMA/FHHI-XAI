@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
+import torchvision.transforms.functional as TF
 from PIL import Image
 import natsort
 
@@ -45,8 +46,11 @@ class FloodDataset(Dataset):
 
         # pairing config
         self.strict_pairing = strict_pairing
+        # Accept either 'Ids' or 'Ids_' (and other common mask suffixes). We also normalize stems
+        # by stripping trailing underscores so that filenames like 'image_133_.jpg' match
+        # masks named 'image_133Ids_.jpg'. Users may still pass custom patterns via mask_suffix_patterns.
         self.mask_suffix_patterns = mask_suffix_patterns or [
-            r"_mask$", r"-mask$", r"_label$", r"-label$", r"_gt$", r"-gt$", r"_ann$", r"-ann$", r"Ids$"
+            r"_mask$", r"-mask$", r"_label$", r"-label$", r"_gt$", r"-gt$", r"_ann$", r"-ann$", r"Ids$", r"Ids_?$"
         ]
         self._mask_suffix_re = re.compile("|".join(self.mask_suffix_patterns), flags=re.IGNORECASE)
 
@@ -59,18 +63,58 @@ class FloodDataset(Dataset):
         image_files_all = natsort.natsorted(image_files_all)
         mask_files_all  = natsort.natsorted(mask_files_all)
 
-        def stem_no_ext(p: Path) -> str: return p.stem
-        def norm_mask_stem(s: str) -> str: return self._mask_suffix_re.sub("", s)
+        def stem_no_ext(p: Path) -> str:
+            """Return the filename stem with trailing underscores removed.
 
-        img_by_stem  = {stem_no_ext(p): p for p in image_files_all}
+            This makes stems like 'image_133_' normalize to 'image_133' so they match
+            masks that may be named 'image_133Ids_.jpg' after mask-suffix normalization.
+            """
+            return p.stem.rstrip("_")
+
+        def norm_mask_stem(s: str) -> str:
+            """Normalize a mask stem by removing configured suffixes and trailing underscores."""
+            s2 = self._mask_suffix_re.sub("", s)
+            return s2.rstrip("_")
+
+        # Group images and masks by normalized stem -> lists (preserve duplicates)
+        img_groups = {}
+        for p in image_files_all:
+            k = stem_no_ext(p)
+            img_groups.setdefault(k, []).append(p)
+        for k in list(img_groups.keys()):
+            img_groups[k] = natsort.natsorted(img_groups[k])
+
         if self.strict_pairing:
-            mask_by_stem = {stem_no_ext(p): p for p in mask_files_all}
+            mask_groups = {}
+            for p in mask_files_all:
+                k = stem_no_ext(p)
+                mask_groups.setdefault(k, []).append(p)
+            for k in list(mask_groups.keys()):
+                mask_groups[k] = natsort.natsorted(mask_groups[k])
         else:
-            mask_by_stem = {norm_mask_stem(stem_no_ext(p)): p for p in mask_files_all}
+            mask_groups = {}
+            for p in mask_files_all:
+                k = norm_mask_stem(stem_no_ext(p))
+                mask_groups.setdefault(k, []).append(p)
+            for k in list(mask_groups.keys()):
+                mask_groups[k] = natsort.natsorted(mask_groups[k])
 
-        common = [s for s in natsort.natsorted(img_by_stem.keys()) if s in mask_by_stem]
-        self.image_files: List[Path] = [img_by_stem[s]  for s in common]
-        self.mask_files:  List[Path] = [mask_by_stem[s] for s in common]
+        # Pair items within each normalized stem by order. This handles cases where both images
+        # and masks include two variants (e.g. 'image_133.jpg' and 'image_133_.jpg' together with
+        # 'image_133Ids.jpg' and 'image_133Ids_.jpg'). We take min(len(imgs), len(masks)) pairs.
+        image_list = []
+        mask_list = []
+        common_keys = [s for s in natsort.natsorted(img_groups.keys()) if s in mask_groups]
+        for k in common_keys:
+            imgs = img_groups[k]
+            masks = mask_groups[k]
+            n_pairs = min(len(imgs), len(masks))
+            for i in range(n_pairs):
+                image_list.append(imgs[i])
+                mask_list.append(masks[i])
+
+        self.image_files: List[Path] = image_list
+        self.mask_files:  List[Path] = mask_list
 
         if (len(self.image_files) == 0 or len(self.mask_files) == 0) and \
            (len(image_files_all) == len(mask_files_all) and len(image_files_all) > 0):
@@ -193,7 +237,7 @@ class FloodDataset(Dataset):
 
     @staticmethod
     def _mask_to_long01(mask_pil: Image.Image) -> torch.Tensor:
-        m = transforms.functional.pil_to_tensor(mask_pil).squeeze(0)  # uint8 (H,W)
+        m = TF.pil_to_tensor(mask_pil).squeeze(0)  # uint8 (H,W)
         uniq = torch.unique(m)
         if set(uniq.tolist()) <= {0, 255}:
             m = (m > 127).to(torch.uint8)
