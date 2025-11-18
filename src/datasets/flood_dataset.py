@@ -1,248 +1,244 @@
 import os
-from typing import Tuple, List, Optional
-from pathlib import Path
 import re
+from pathlib import Path
+from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
-from torch.utils.data import Dataset
-from torchvision import transforms
-from torchvision.transforms import InterpolationMode
-import torchvision.transforms.functional as TF
 from PIL import Image
-import natsort
 
+from src.datasets.base_dataset import BaseDataset
 
-class FloodDataset(Dataset):
+class FloodDataset(BaseDataset):
     """
-    Dataset for flood segmentation.
-    Just a normal dataset class with some additional methods for L-CRP:
-        - class_names;
-        - reverse_augmentation and reverse_normalization.
+    Flood segmentation dataset with the same preprocessing as general_flood_v3
+    (BaseDataset pipeline), but files are discovered by scanning directories
+    instead of reading a list file.
     """
+
     class_names = ["background", "flood"]
-
-    # ImageNet stats
-    IMAGENET_MEAN = (0.485, 0.456, 0.406)
-    IMAGENET_STD  = (0.229, 0.224, 0.225)
+    color_list = [[0, 0, 0], [1, 1, 1]]
 
     def __init__(
         self,
-        root_dir: str,
-        split: str = "train",
+        root: Optional[str] = None,
+        split: Optional[str] = None,
+        # backward-compatible alias for some notebooks
+        root_dir: Optional[str] = None,
+        # optional transform argument kept for API compatibility (not used here)
         transform=None,
-        image_size: Tuple[int, int] = (1280, 720),  # (H, W)
+        num_classes: int = 2,
+        multi_scale: bool = True,
+        flip: bool = True,
+        ignore_label: int = -1,
+        base_size: int = 2048,
+        crop_size: Tuple[int, int] = (720, 1280),
+        scale_factor: int = 16,
+        mean: List[float] = [0.485, 0.456, 0.406],
+        std: List[float] = [0.229, 0.224, 0.225],
+        bd_dilate_size: int = 4,
+        return_or_dims: bool = False,
         strict_pairing: bool = False,
         mask_suffix_patterns: Optional[List[str]] = None,
+        list_path: Optional[str] = None,
     ):
-        # directories
-        self.image_dir = os.path.join(root_dir, "RGB", split, "JPEG")
-        self.mask_dir  = os.path.join(root_dir, "annotations", split, "JPEG")
+        # Accept either `root` or `root_dir` for compatibility with examples
+        if root is None and root_dir is not None:
+            root = root_dir
+        if root is None:
+            raise ValueError("root or root_dir must be provided to FloodDataset")
+        super(FloodDataset, self).__init__(ignore_label, base_size, crop_size, scale_factor, mean, std)
 
-        # external hook (kept)
-        self.transform = transform
+        # preserve the base root for list files
+        self.base_root = root
+        if split is None:
+            split = "train"
+        # allow dataset to live under root/General_Flood_v3 or directly under root
+        self.dataset_root = os.path.join(root, "General_Flood_v3")
+        if not os.path.isdir(self.dataset_root):
+            self.dataset_root = root
 
-        # size (kept)
-        self.image_size = image_size  # (H, W)
+        self.image_dir = os.path.join(self.dataset_root, "RGB", split, "JPEG")
+        self.mask_dir = os.path.join(self.dataset_root, "annotations", split, "JPEG")
 
-        # pairing config
+        self.num_classes = num_classes
+        self.multi_scale = multi_scale
+        self.flip = flip
+        self.bd_dilate_size = bd_dilate_size
+        self.return_or_dims = return_or_dims
+
+        # filename alignment
         self.strict_pairing = strict_pairing
-        # Accept either 'Ids' or 'Ids_' (and other common mask suffixes). We also normalize stems
-        # by stripping trailing underscores so that filenames like 'image_133_.jpg' match
-        # masks named 'image_133Ids_.jpg'. Users may still pass custom patterns via mask_suffix_patterns.
         self.mask_suffix_patterns = mask_suffix_patterns or [
-            r"_mask$", r"-mask$", r"_label$", r"-label$", r"_gt$", r"-gt$", r"_ann$", r"-ann$", r"Ids$", r"Ids_?$"
+            r"_mask$",
+            r"-mask$",
+            r"_label$",
+            r"-label$",
+            r"_gt$",
+            r"-gt$",
+            r"_ann$",
+            r"-ann$",
+            r"Ids$",
+            r"Ids_?$",
         ]
         self._mask_suffix_re = re.compile("|".join(self.mask_suffix_patterns), flags=re.IGNORECASE)
 
-        # gather files (non-recursive)
-        img_exts  = (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG")
+        self.list_path = list_path
+
+        # Prefer explicit list files (matches general_flood_v3 evaluation) for deterministic pairing
+        if self.list_path is not None:
+            self.files = self._files_from_list(self.list_path)
+        else:
+            self.files = self._scan_and_pair()
+        self.class_weights = None
+
+    # pairing helpers
+    def _stem_no_ext(self, p: Path) -> str:
+        return p.stem.rstrip("_")
+
+    def _norm_mask_stem(self, s: str) -> str:
+        s2 = self._mask_suffix_re.sub("", s)
+        return s2.rstrip("_")
+
+    def _scan_and_pair(self):
+        img_exts = (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG")
         mask_exts = (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG")
 
-        image_files_all = [Path(self.image_dir, f) for f in os.listdir(self.image_dir) if f.endswith(img_exts)]
-        mask_files_all  = [Path(self.mask_dir,  f) for f in os.listdir(self.mask_dir)  if f.endswith(mask_exts)]
-        image_files_all = natsort.natsorted(image_files_all)
-        mask_files_all  = natsort.natsorted(mask_files_all)
+        image_files_all = [
+            Path(self.image_dir, f) for f in os.listdir(self.image_dir) if f.endswith(img_exts)
+        ]
+        mask_files_all = [
+            Path(self.mask_dir, f) for f in os.listdir(self.mask_dir) if f.endswith(mask_exts)
+        ]
+        image_files_all.sort()
+        mask_files_all.sort()
 
-        def stem_no_ext(p: Path) -> str:
-            """Return the filename stem with trailing underscores removed.
-
-            This makes stems like 'image_133_' normalize to 'image_133' so they match
-            masks that may be named 'image_133Ids_.jpg' after mask-suffix normalization.
-            """
-            return p.stem.rstrip("_")
-
-        def norm_mask_stem(s: str) -> str:
-            """Normalize a mask stem by removing configured suffixes and trailing underscores."""
-            s2 = self._mask_suffix_re.sub("", s)
-            return s2.rstrip("_")
-
-        # Group images and masks by normalized stem -> lists (preserve duplicates)
         img_groups = {}
         for p in image_files_all:
-            k = stem_no_ext(p)
+            k = self._stem_no_ext(p)
             img_groups.setdefault(k, []).append(p)
         for k in list(img_groups.keys()):
-            img_groups[k] = natsort.natsorted(img_groups[k])
+            img_groups[k].sort()
 
         if self.strict_pairing:
             mask_groups = {}
             for p in mask_files_all:
-                k = stem_no_ext(p)
+                k = self._stem_no_ext(p)
                 mask_groups.setdefault(k, []).append(p)
             for k in list(mask_groups.keys()):
-                mask_groups[k] = natsort.natsorted(mask_groups[k])
+                mask_groups[k].sort()
         else:
             mask_groups = {}
             for p in mask_files_all:
-                k = norm_mask_stem(stem_no_ext(p))
+                k = self._norm_mask_stem(self._stem_no_ext(p))
                 mask_groups.setdefault(k, []).append(p)
             for k in list(mask_groups.keys()):
-                mask_groups[k] = natsort.natsorted(mask_groups[k])
+                mask_groups[k].sort()
 
-        # Pair items within each normalized stem by order. This handles cases where both images
-        # and masks include two variants (e.g. 'image_133.jpg' and 'image_133_.jpg' together with
-        # 'image_133Ids.jpg' and 'image_133Ids_.jpg'). We take min(len(imgs), len(masks)) pairs.
-        image_list = []
-        mask_list = []
-        common_keys = [s for s in natsort.natsorted(img_groups.keys()) if s in mask_groups]
+        files = []
+        common_keys = [s for s in sorted(img_groups.keys()) if s in mask_groups]
         for k in common_keys:
             imgs = img_groups[k]
             masks = mask_groups[k]
             n_pairs = min(len(imgs), len(masks))
             for i in range(n_pairs):
-                image_list.append(imgs[i])
-                mask_list.append(masks[i])
+                img_path = imgs[i]
+                mask_path = masks[i]
+                name = os.path.splitext(os.path.basename(mask_path))[0]
+                files.append({
+                    "img": img_path,
+                    "label": mask_path,
+                    "name": name
+                })
 
-        self.image_files: List[Path] = image_list
-        self.mask_files:  List[Path] = mask_list
+        if not files and len(image_files_all) == len(mask_files_all) and len(image_files_all) > 0:
+            for img_path, mask_path in zip(image_files_all, mask_files_all):
+                name = os.path.splitext(os.path.basename(mask_path))[0]
+                files.append({
+                    "img": img_path,
+                    "label": mask_path,
+                    "name": name
+                })
 
-        if (len(self.image_files) == 0 or len(self.mask_files) == 0) and \
-           (len(image_files_all) == len(mask_files_all) and len(image_files_all) > 0):
-            self.image_files = image_files_all
-            self.mask_files  = mask_files_all
+        assert files, f"No paired images/masks found in {self.image_dir} and {self.mask_dir}"
+        return files
 
-        assert len(self.image_files) == len(self.mask_files), "Mismatch between number of images and masks after alignment!"
+    def _files_from_list(self, list_path: str):
+        """Reproduce the list-driven pairing used by general_flood_v3 for identical ordering."""
+        list_file = Path(list_path)
+        if not list_file.is_absolute():
+            list_file = Path(self.base_root) / list_path
+        if not list_file.exists():
+            raise FileNotFoundError(f"List file not found: {list_file}")
 
-        # core transforms
-        self.resize_img  = transforms.Resize(self.image_size, interpolation=InterpolationMode.BILINEAR)
-        self.to_tensor   = transforms.ToTensor()
-        self.normalize   = transforms.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD)
-        self.resize_mask = transforms.Resize(self.image_size, interpolation=InterpolationMode.NEAREST)
+        files = []
+        with open(list_file, "r") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 2:
+                    continue
+                img_rel, mask_rel = parts[:2]
+                img_path = Path(self.dataset_root) / img_rel
+                mask_path = Path(self.dataset_root) / mask_rel
+                name = os.path.splitext(os.path.basename(mask_path))[0]
+                files.append({"img": img_path, "label": mask_path, "name": name})
 
-        # reverse_normalization (now returns float32 in [0,1] — SAFE for requires_grad)
-        mean = torch.tensor(self.IMAGENET_MEAN).view(3, 1, 1)
-        std  = torch.tensor(self.IMAGENET_STD).view(3, 1, 1)
-
-        def _rev_norm(x: torch.Tensor) -> torch.Tensor:
-            """
-            Undo ImageNet normalization and return float32 in [0,1].
-            This avoids uint8 outputs that would break `.requires_grad_()`.
-            """
-            if not isinstance(x, torch.Tensor):
-                x = torch.as_tensor(x)
-            if not x.dtype.is_floating_point:
-                # Handle uint8 or longs coming from external callers
-                x = x.float()
-                if x.max().item() > 1.5:  # assume [0..255]
-                    x = x / 255.0
-            x = (x * std) + mean
-            return x.clamp(0.0, 1.0).to(torch.float32, copy=False)
-
-        self.reverse_normalization = _rev_norm
-
-        # detect if user transform is PIL-space (contains ToTensor)
-        self._transform_is_pil = False
-        if self.transform is not None and hasattr(self.transform, "transforms"):
-            self._transform_is_pil = any(isinstance(t, transforms.ToTensor) for t in self.transform.transforms)
+        assert files, f"No entries loaded from list file: {list_file}"
+        return files
 
     def __len__(self):
-        return len(self.image_files)
+        return len(self.files)
 
-    def __getitem__(self, idx: int):
-        n = len(self.image_files)
-        if idx < 0 or idx >= n:
-            raise IndexError(f"Index {idx} is out of range for dataset of length {n}.")
+    def color2label(self, color_map):
+        label = np.ones(color_map.shape[:2]) * self.ignore_label
+        for i, v in enumerate(self.color_list):
+            label[(color_map == v).sum(2) == 3] = i
+        return label.astype(np.uint8)
 
-        img_path  = self.image_files[idx]
-        mask_path = self.mask_files[idx]
+    def label2color(self, label):
+        color_map = np.zeros(label.shape + (3,))
+        for i, v in enumerate(self.color_list):
+            color_map[label == i] = self.color_list[i]
+        return color_map.astype(np.uint8)
 
-        img  = Image.open(img_path).convert("RGB")
-        mask = Image.open(mask_path).convert("L")
+    def __getitem__(self, index):
+        item = self.files[index]
+        name = item["name"]
 
-        # mask: resize(nearest) + binarize -> LongTensor
-        mask_resized = self.resize_mask(mask)
-        mask_tensor  = self._mask_to_long01(mask_resized)
+        image = Image.open(item["img"]).convert("RGB")
+        image = np.array(image)
+        image_or = image.copy()
+        size = image.shape
 
-        # image: robust handling of user transform
-        img_resized = self.resize_img(img)
+        color_map = Image.open(item["label"]).convert("RGB")
+        color_map = np.array(color_map)
+        label = self.color2label(color_map)
 
-        if self.transform is None:
-            image_tensor = self.normalize(self.to_tensor(img_resized))
-        elif self._transform_is_pil:
-            out = self.transform(img_resized)
-            if isinstance(out, torch.Tensor):
-                mx = float(out.max().item()) if out.numel() else 1.0
-                if mx <= 1.5:
-                    image_tensor = self.normalize(out.float())
-                else:
-                    image_tensor = self.normalize(out.float().div_(255.0).clamp_(0, 1))
-            else:
-                image_tensor = self.normalize(self.to_tensor(out))
-        else:
-            image_tensor = self.normalize(self.to_tensor(img_resized))
-            image_tensor = self.transform(image_tensor)
-
-        # ensure float32 for autograd safety
-        image_tensor = image_tensor.to(torch.float32, copy=False)
-
-        return image_tensor, mask_tensor
-
-    # --- unprocessed float32 (no normalization), for CRP/PCX if needed ---
-    def get_unprocessed_image(self, idx: int) -> torch.Tensor:
-        """
-        Return the resized RGB image as float32 tensor in [0,1], shape (3,H,W),
-        WITHOUT ImageNet normalization. Safe for `.requires_grad_()`.
-        """
-        n = len(self.image_files)
-        if idx < 0 or idx >= n:
-            raise IndexError(f"Index {idx} is out of range for dataset of length {n}.")
-
-        img_path = self.image_files[idx]
-        img = Image.open(img_path).convert("RGB")
-        img_resized = self.resize_img(img)
-        img_t = self.to_tensor(img_resized)        # [0,1] float32 (3,H,W)
-        return img_t.to(torch.float32, copy=False)
-
-    def get_unprocessed_sample(self, idx: int):
-        """
-        Returns (raw_image_float32_[0..1], mask_long_{0,1}) after resizing.
-        Image is NOT normalized.
-        """
-        x = self.get_unprocessed_image(idx)
-        m = self._mask_to_long01(
-            self.resize_mask(Image.open(self.mask_files[idx]).convert("L"))
+        image, label, edge = self.gen_sample(
+            image,
+            label,
+            self.multi_scale,
+            self.flip,
+            edge_pad=False,
+            edge_size=self.bd_dilate_size,
+            city=False,
         )
-        return x, m
 
-    def reverse_augmentation(self, data: torch.Tensor) -> torch.Tensor:
-        """
-        Kept for compatibility; returns uint8 for visualization.
-        Not used by CRP .requires_grad_() paths.
-        """
-        if data.dtype.is_floating_point:
-            data = (data.clamp(0, 1) * 255.0).to(torch.uint8)
+        if self.return_or_dims:
+            return image.copy(), label.copy(), edge.copy(), np.array(size), image_or, name
         else:
-            data = data.to(torch.uint8)
-        return data.detach().cpu()
+            return image.copy(), label.copy(), edge.copy(), np.array(size), name
 
-    @staticmethod
-    def _mask_to_long01(mask_pil: Image.Image) -> torch.Tensor:
-        m = TF.pil_to_tensor(mask_pil).squeeze(0)  # uint8 (H,W)
-        uniq = torch.unique(m)
-        if set(uniq.tolist()) <= {0, 255}:
-            m = (m > 127).to(torch.uint8)
-        elif set(uniq.tolist()) <= {0, 1}:
-            m = m.to(torch.uint8)
-        else:
-            m = (m > 0).to(torch.uint8)
-        return m.to(torch.long)
+    def single_scale_inference(self, config, model, image):
+        return self.inference(config, model, image)
+
+    def save_pred(self, preds, sv_path, name):
+        preds = np.asarray(np.argmax(preds.cpu(), axis=1), dtype=np.uint8)
+        for i in range(preds.shape[0]):
+            pred = self.label2color(preds[i])
+            save_img = Image.fromarray(pred)
+            save_img.save(os.path.join(sv_path, name[i] + ".png"))
+
+
+# backward compat alias
+Flood = FloodDataset
