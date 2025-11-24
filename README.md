@@ -1,6 +1,6 @@
-# L-CRP-TEMA
+# PCX-TEMA
 
-This repository contains the code for applying the L-CRP method for TEMA project. 
+This repository contains the code for applying the PCX method for TEMA project. 
 
 ## Setting up
 
