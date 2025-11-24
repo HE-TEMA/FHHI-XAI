@@ -123,4 +123,21 @@ python test_post_data.py ImageMetadata --cloud
 The test script will send sample image metadata to the application and you should see the processing results in the logs of both the Flask application and the worker process.
 
 
+### References
+
+
+LRP (Layer-wise Relevance Propagation):
+original paper: https://doi.org/10.1371/journal.pone.0130140
+overview paper: https://doi.org/10.1007/978-3-030-28954-6_10
+zennit toolbox: https://github.com/chr5tphr/zennit
+CRP (Concept Relevance Propagation):
+paper: https://doi.org/10.1038/s42256-023-00711-8
+zennit-crp toolbox: https://github.com/rachtibat/zennit-crp
+L-CRP (Concept Relevance Propagation for Localization Models):
+paper: https://arxiv.org/pdf/2211.11426
+L-CRP code: https://github.com/maxdreyer/L-CRP/tree/main
+PCX (Prototypical Concept-based Explanations):
+paper: https://arxiv.org/pdf/2311.16681
+PCX code: https://github.com/maxdreyer/pcx/tree/main
+
 
