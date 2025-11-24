@@ -16,4 +16,4 @@ __pycache__/
 output/
 
 .venv/
-.conda/
+.conda/*.h5

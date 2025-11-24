@@ -12,7 +12,7 @@ import os
 sys.path.append(os.path.join(os.getcwd(),".."))
 
 from src.glocal_analysis import run_analysis 
-from src.datasets.flood_dataset import FloodDataset
+from datasets.flood_dataset import FloodDataset
 from src.datasets.DLR_dataset import DatasetDLR
 from src.plot_crp_explanations import plot_explanations, plot_one_image_explanation
 from src.minio_client import MinIOClient

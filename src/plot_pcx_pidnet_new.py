@@ -27,7 +27,7 @@ from crp.helper import get_layer_names
 from crp.image import imgify
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
 from LCRP.utils.render import vis_opaque_img_border
-from src.pcx_helper import plot_gmm_umap_2d, plot_gmm_umap_3d, plot_prototype_n_nearest
+#from src.pcx_helper import plot_gmm_umap_2d, plot_gmm_umap_3d, plot_prototype_n_nearest
 
 
 logging.disable(logging.ERROR)
@@ -49,7 +49,7 @@ def get_ref_images(
     layer_name: str,
     composite,
     n_ref: int = 12,
-    ref_imgs_save_path: str = "output/ref_imgs_pidnet/",
+    ref_imgs_save_path: str = "../examples/output/ref_images_pidnet_BRK/",
 ) -> Dict[int, List[Image.Image]]:
     """
     Get and cache reference images. CPU/PIL based.
@@ -257,6 +257,27 @@ def plot_one_image_pcx_explanation(
     print(f"[gmm] loading attributions @ {attr_path}")
     attributions_np = np.load(attr_path)  # shape [N, C]
     print(f"[gmm] attributions shape={attributions_np.shape}")
+    if attributions_np.size == 0:
+        raise ValueError(f"[gmm] Empty attribution bank for layer '{layer}'. Re-run attribution export first.")
+
+    finite_mask = np.isfinite(attributions_np).all(axis=1)
+    if not finite_mask.all():
+        bad = int((~finite_mask).sum())
+        print(f"[gmm] WARNING: dropping {bad} rows with NaN/Inf values before fitting GMM.")
+        attributions_np = attributions_np[finite_mask]
+
+    attributions_np = np.nan_to_num(attributions_np, nan=0.0, posinf=0.0, neginf=0.0)
+
+    nonzero_mask = ~(np.isclose(attributions_np.std(axis=1), 0.0) & np.isclose(attributions_np.mean(axis=1), 0.0))
+    if not nonzero_mask.any():
+        raise ValueError(
+            f"[gmm] No valid (non-zero) attribution rows left for layer '{layer}'. "
+            "Recompute the attribution bank with multiple samples."
+        )
+    if not nonzero_mask.all():
+        dropped = int((~nonzero_mask).sum())
+        print(f"[gmm] INFO: dropping {dropped} constant rows from attribution bank.")
+        attributions_np = attributions_np[nonzero_mask]
 
     # Fit fresh GMMs each run so prototype selection adapts to current statistics
     print("[gmm] fitting GMM for current run")
@@ -280,7 +301,12 @@ def plot_one_image_pcx_explanation(
     # Likelihoods and prototype selection
     print("[gmm] scoring full dataset and current sample")
     scores = gmm.score_samples(attributions_np)  # [N]
-    sample_vec = (channel_rels_vec.detach().cpu().numpy()).reshape(1, -1)  # [1,C]
+    sample_vec_t = channel_rels_vec.detach().cpu()
+    if torch.isnan(sample_vec_t).any() or torch.isinf(sample_vec_t).any():
+        count_bad = int((~torch.isfinite(sample_vec_t)).sum().item())
+        print(f"[gmm] WARNING: sample channel relevances contain {count_bad} non-finite values; replacing with zeros.")
+        sample_vec_t = torch.nan_to_num(sample_vec_t, nan=0.0, posinf=0.0, neginf=0.0)
+    sample_vec = sample_vec_t.numpy().reshape(1, -1)  # [1,C]
     score_sample = float(gmm.score_samples(sample_vec)[0])
     proto_likes = [float(g_.score_samples(sample_vec)[0]) for g_ in prototype_gmms]
     best_proto = int(np.argmax(proto_likes))

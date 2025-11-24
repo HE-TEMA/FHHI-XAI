@@ -22,12 +22,20 @@ logger = logging.getLogger(__name__)
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
 from LCRP.utils.render import vis_opaque_img_border
 
+DISPLAY_SIZE = 150
 
 def plot_explanations(model_name, model, dataset, sample_id, class_id, layer, prediction_num, mode, n_concepts,
                       n_refimgs, output_dir):
     # Taken from L-CRP/experiments/plot_crp_explanation.py (visualization only)
-    img, t = dataset[sample_id]
-    print(img.shape)
+    # Datasets may return either (image, label) or a longer tuple
+    # (image, label, edge, size, name) depending on implementation.
+    out = dataset[sample_id]
+    try:
+        img, t = out
+    except Exception:
+        # Fall back to taking the first two elements when more are returned
+        img, t = out[0], out[1]
+    print(getattr(img, "shape", str(type(img))))
 
     fig = plot_one_image_explanation(
         model_name, model, img, dataset, class_id, layer, prediction_num, mode, n_concepts, n_refimgs, output_dir
@@ -61,6 +69,144 @@ def _with_model_on_cpu(model, fn):
         return fn()
     finally:
         model.to(original_device).eval()
+
+
+def _to_2d(array):
+    """Convert activation tensors of arbitrary shape to a 2D spatial map."""
+    arr = np.array(array)
+    arr = np.squeeze(arr)
+    if arr.ndim == 2:
+        return arr
+    if arr.ndim == 3:
+        if arr.shape[0] <= 4 and arr.shape[1] > 10 and arr.shape[2] > 10:
+            return arr.max(axis=0)
+        if arr.shape[2] <= 4 and arr.shape[0] > 10 and arr.shape[1] > 10:
+            return arr.mean(axis=2)
+        if arr.shape[0] == 1:
+            return arr[0]
+        return arr.mean(axis=0)
+    shape = arr.shape
+    idx = list(np.argsort(shape)[-2:])
+    perm = [i for i in range(arr.ndim) if i not in idx] + idx
+    arr = np.transpose(arr, perm)
+    while arr.ndim > 2:
+        arr = arr.mean(axis=0)
+    return arr
+
+
+def _colorize_signed_map(raw_map, cmap_name="seismic", clip_percentile=99.5, power=1.15, saturation=0.85):
+    """Normalize activations and return a high-contrast RGB visualization."""
+    map2d = _to_2d(raw_map).astype("float32")
+    if map2d.size == 0:
+        return np.zeros((1, 1, 3), dtype=np.float32)
+
+    abs_values = np.abs(map2d)
+    scale = np.percentile(abs_values, clip_percentile)
+    if scale <= 0:
+        scale = abs_values.max()
+    if scale <= 0:
+        return np.zeros(map2d.shape + (3,), dtype=np.float32)
+
+    normalized = np.clip(map2d / (scale + 1e-12), -1.0, 1.0)
+    normalized = np.sign(normalized) * (np.abs(normalized) ** power)
+
+    cmap = plt.cm.get_cmap(cmap_name)
+    colored = cmap((normalized + 1.0) / 2.0)[..., :3]
+    colored = colored * saturation + (1.0 - saturation)
+    return colored
+
+
+def _resize_for_display(array, size=DISPLAY_SIZE, is_mask=False):
+    """Resize numpy-like arrays to a fixed square output for consistent plotting."""
+    arr = np.array(array)
+    if arr.size == 0:
+        return arr
+
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        arr = arr[:, :, 0]
+
+    tensor = torch.from_numpy(arr).float()
+    if tensor.ndim == 2:
+        tensor = tensor.unsqueeze(0).unsqueeze(0)
+    elif tensor.ndim == 3:
+        tensor = tensor.permute(2, 0, 1).unsqueeze(0)
+    else:
+        tensor = tensor.reshape(1, 1, *tensor.shape[-2:])
+
+    if not is_mask:
+        if tensor.max() > 1.0:
+            tensor = tensor / 255.0
+        if tensor.min() < 0.0:
+            tensor = tensor - tensor.min()
+            if tensor.max() > 0:
+                tensor = tensor / tensor.max()
+
+    mode = "nearest" if is_mask else "bilinear"
+    resized = torch.nn.functional.interpolate(
+        tensor, size=(size, size), mode=mode,
+        align_corners=False if mode == "bilinear" else None
+    ).squeeze(0)
+
+    if resized.shape[0] == 1:
+        out = resized[0].cpu().numpy()
+        if is_mask:
+            return out > 0.5
+        return np.clip(out, 0.0, 1.0)
+
+    out = resized.permute(1, 2, 0).cpu().numpy()
+    return np.clip(out, 0.0, 1.0)
+
+
+def _recover_visual_tensor(dataset, tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Try reverse_augmentation / reverse_normalization on the dataset; fall back to
+    min-max scaling so plotting keeps working even when helpers are missing.
+    """
+    candidate = tensor.detach().cpu()
+
+    def _ensure_tensor(obj):
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu()
+        return torch.from_numpy(np.array(obj)).detach().cpu()
+
+    recovered = None
+    for attr_name in ("reverse_augmentation", "reverse_normalization"):
+        fn = getattr(dataset, attr_name, None)
+        if callable(fn):
+            try:
+                recovered = _ensure_tensor(fn(candidate))
+                break
+            except Exception as exc:
+                logger.debug(f"{attr_name} failed for visualization fallback: {exc}")
+        else:
+            recovered = None
+
+    if recovered is None:
+        x = candidate.float()
+        if torch.isfinite(x).all():
+            mn = x.min()
+            mx = x.max()
+            if mx > mn:
+                x = (x - mn) / (mx - mn)
+            else:
+                x = x * 0.0
+        else:
+            x = torch.zeros_like(x)
+        x = (x * 255.0).clamp(0, 255)
+    else:
+        x = recovered.float()
+        if x.max() <= 1.5 and x.min() >= 0:
+            x = x * 255.0
+
+    if x.ndim == 3:
+        if x.shape[0] > 3:
+            x = x[:3]
+        elif x.shape[0] == 1:
+            x = x.repeat(3, 1, 1)
+    elif x.ndim == 2:
+        x = x.unsqueeze(0).repeat(3, 1, 1)
+
+    return x.clamp(0, 255).to(torch.float32)
 
 
 def _run_attr_cpu(model, attribution_cls, composite, img_or_batch, *,
@@ -104,22 +250,45 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
     composite = COMPOSITES[model_name](canonizers=[CANONIZERS[model_name]()])
     condition = [{"y": class_id}]
 
-    # Ensure input on same device, add batch dim
+    # Ensure input is a tensor on the right device and has a batch dim
+    if isinstance(img, np.ndarray):
+        img = torch.from_numpy(img)
+    elif hasattr(img, "to") and isinstance(img, torch.Tensor):
+        pass
+    elif hasattr(img, "mode"):  # PIL Image
+        img = F.to_tensor(img)
+    else:
+        img = torch.as_tensor(img)
+
+    if img.ndim == 2:
+        img = img.unsqueeze(0)
+
     img = img[None, ...].to(device)
     ratio = img.shape[-2] / img.shape[-1]
 
     # Create the figure with axes
+    concept_space = max(n_refimgs * ratio * 0.8 + 3, 6)
+    total_rows = n_concepts + 1
+    fig_width = 4.0 + concept_space
+    fig_height = 2.1 * total_rows
     fig, axs = plt.subplots(
-        n_concepts, 3,
-        figsize=((1.6 + 1 / ratio) * n_refimgs / 4, 1.6 * n_concepts),
-        gridspec_kw={'width_ratios': [4, 4, n_refimgs * ratio]},
+        total_rows, 3,
+        figsize=(fig_width, fig_height),
+        gridspec_kw={'width_ratios': [5, 5, concept_space]},
         dpi=200
     )
     # Normalize axs shape when n_concepts == 1 (matplotlib returns 1D array)
-    if n_concepts == 1:
+    if total_rows == 1:
         axs = np.array([axs])
 
     log_memory("AFTER FIGURE CREATION")
+
+    heatmap_display = None
+    raw_display = None
+    segmentation_display = None
+    segmentation_mask = None
+    raw_display = None
+    segmentation_display = None
 
     # -------------------------
     # Branch: segmentation models
@@ -135,8 +304,11 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
 
         log_memory("AFTER SEGMENTATION ATTR")
 
-        # Heatmap
-        heatmap = zimage.imgify(attr.heatmap.detach().cpu(), symmetric=True)
+        # Heatmap (use matplotlib 'Reds' colormap for stronger red visualization)
+        raw_heat = attr.heatmap.detach().cpu().numpy()
+
+        heatmap = _colorize_signed_map(raw_heat)
+        heatmap_display = _resize_for_display(heatmap, DISPLAY_SIZE)
 
         # Mask
         if "DLR" in output_dir:
@@ -146,8 +318,9 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
         else:
             mask = (attr.prediction[0].argmax(dim=0) == class_id).detach().cpu()
 
-        # Reverse augmentation for visualization on CPU
-        sample_ = dataset.reverse_augmentation(img[0].detach().cpu())
+        # Recover a display-ready tensor even if dataset lacks helpers
+        sample_ = _recover_visual_tensor(dataset, img[0])
+        raw_display = _resize_for_display(sample_.permute(1, 2, 0).numpy(), DISPLAY_SIZE)
 
         # pidnet: resize mask to sample_ spatial size (CPU ops)
         if "pidnet" in model_name:
@@ -164,11 +337,13 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
             vis = draw_segmentation_masks(sample_[:3, :, :].to(torch.uint8), masks=mask.cpu(), alpha=0.5, colors=["red"])
 
         img_ = F.to_pil_image(vis.cpu())
-        axs[0][0].imshow(np.asarray(img_))
-        axs[0][0].contour(mask.cpu().numpy(), colors="black", linewidths=[2])
+        img_np = np.asarray(img_)
+        mask_np = mask.cpu().numpy().astype(float)
+        segmentation_display = _resize_for_display(img_np, DISPLAY_SIZE)
+        segmentation_mask = _resize_for_display(mask_np, DISPLAY_SIZE, is_mask=True)
 
         # Clear variables
-        del mask, sample_, vis
+        del mask, sample_, vis, img_np, mask_np
         gc.collect()
 
     # -------------------------
@@ -185,9 +360,11 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
 
         log_memory("AFTER DETECTION ATTR")
 
-        # Heatmap
-        heatmap = np.array(zimage.imgify(attr.heatmap.detach().cpu(), symmetric=True))
-        heatmap = zimage.imgify(heatmap, symmetric=True)
+        # Heatmap (use matplotlib 'Reds' colormap for stronger red visualization)
+        raw_heat = attr.heatmap.detach().cpu().numpy()
+
+        heatmap = _colorize_signed_map(raw_heat)
+        heatmap_display = _resize_for_display(heatmap, DISPLAY_SIZE)
 
         # Boxes on the model's (restored) device
         img_dev = img.to(_model_device(model))
@@ -203,20 +380,31 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
         colors = ["#ffcc00" for _ in boxes]
 
         # Visualize boxes
-        base_img = dataset.reverse_normalization(img[0].detach().cpu()).to(torch.uint8)
+        base_tensor = _recover_visual_tensor(dataset, img[0])
+        raw_display = _resize_for_display(base_tensor.permute(1, 2, 0).numpy(), DISPLAY_SIZE)
+        base_img = base_tensor.to(torch.uint8)
         result = draw_bounding_boxes(base_img, boxes.cpu(), colors=colors, width=8)
 
         img_ = F.to_pil_image(result.cpu())
-        axs[0][0].imshow(np.asarray(img_))
+        img_np = np.asarray(img_)
+        segmentation_display = _resize_for_display(img_np, DISPLAY_SIZE)
 
         # Clear variables
-        del predicted_boxes, predicted_classes, sorted_idx, boxes, result, base_img
+        del predicted_boxes, predicted_classes, sorted_idx, boxes, result, base_img, img_np
         gc.collect()
 
     else:
         raise NameError(f"Unknown model family for visualization: {model_name}")
 
     log_memory("AFTER DETECTION/SEGMENTATION")
+
+    if heatmap_display is None:
+        heatmap_display = np.zeros((DISPLAY_SIZE, DISPLAY_SIZE, 3), dtype=np.float32)
+    if raw_display is None:
+        base_tensor = _recover_visual_tensor(dataset, img[0])
+        raw_display = _resize_for_display(base_tensor.permute(1, 2, 0).numpy(), DISPLAY_SIZE)
+    if segmentation_display is None:
+        segmentation_display = raw_display.copy()
 
     # === Channel relevance ===
     if mode == "relevance":
@@ -280,32 +468,58 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
     print("Plotting...")
     resize = torchvision.transforms.Resize((150, 150))
 
-    for r, row_axs in enumerate(axs):
+    for r in range(total_rows):
+        row_axs = axs[r]
         log_memory(f"PLOTTING CONCEPT {r}")
+
+        if r == 0:
+            for c, ax in enumerate(row_axs):
+                if c == 0:
+                    ax.set_title("input (raw)")
+                    ax.imshow(raw_display)
+                    ax.set_aspect("equal")
+                else:
+                    ax.axis("off")
+                ax.set_xticks([])
+                ax.set_yticks([])
+            gc.collect()
+            continue
+
+        concept_idx = r - 1
 
         for c, ax in enumerate(row_axs):
             if c == 0:
-                if r == 0:
+                if r == 1:
                     ax.set_title("input")
-                elif r == 1:
+                    ax.imshow(segmentation_display)
+                    if segmentation_mask is not None:
+                        ax.contour(segmentation_mask.astype(float), colors="black", linewidths=[2])
+                    ax.set_aspect("equal")
+                elif r == 2:
                     ax.set_title("heatmap")
-                    ax.imshow(heatmap)
+                    ax.imshow(heatmap_display)
+                    ax.set_aspect("equal")
                 else:
                     ax.axis('off')
 
             if c == 1:
-                if r == 0:
+                if r == 1:
                     ax.set_title("cond. heatmap")
-                ax.imshow(imgify(cond_heatmap[r], symmetric=True, cmap="bwr", padding=False))
-                ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(topk_rel[r] * 100):2.1f}%")
+                cond_map = cond_heatmap[concept_idx]
+                if torch.is_tensor(cond_map):
+                    cond_map = cond_map.detach().cpu().numpy()
+                cond_vis = _colorize_signed_map(cond_map)
+                ax.imshow(_resize_for_display(cond_vis, DISPLAY_SIZE))
+                ax.set_aspect("equal")
+                ax.set_ylabel(f"concept {topk_ind[concept_idx]}\n relevance: {(topk_rel[concept_idx] * 100):2.1f}%")
 
             elif c >= 2:
-                if r == 0 and c == 2:
+                if r == 1 and c == 2:
                     ax.set_title("concept visualizations")
 
-                if ref_imgs and topk_ind[r] in ref_imgs:
+                if ref_imgs and topk_ind[concept_idx] in ref_imgs:
                     resized_refs = []
-                    for i in ref_imgs[topk_ind[r]]:
+                    for i in ref_imgs[topk_ind[concept_idx]]:
                         img_tensor = resize(torch.from_numpy(np.array(i)).permute((2, 0, 1)))
                         resized_refs.append(img_tensor)
 
@@ -322,7 +536,7 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
 
         gc.collect()
 
-    plt.tight_layout()
+    fig.subplots_adjust(wspace=0.02, hspace=0.5)
 
     logger.debug(f"Time to plot: {time.time() - plotting_start_ts:.2f}s")
     log_memory("AFTER PLOTTING")

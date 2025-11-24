@@ -17,7 +17,7 @@ from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.plot_pcx_explanations_YOLO import plot_one_image_pcx_explanation
 from src.plotpcx_gpu import plot_pcx_explanations_pidnet
 from src.datasets.person_car_dataset import PersonCarDataset
-from src.datasets.flood_dataset import FloodDataset
+from datasets.flood_dataset import FloodDataset
 from src.entities import get_person_vehicle_detection_explanation_entity, get_flood_segmentation_explanation_entity
 from src.minio_client import FHHI_MINIO_BUCKET
 from src.memory_logging import log_cuda_memory
