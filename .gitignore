@@ -17,3 +17,4 @@ output/
 
 .venv/
 .conda/*.h5
+*.h5
