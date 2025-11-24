@@ -1,11 +1,8 @@
 import os
 import re
-import re
 from pathlib import Path
 from typing import List, Optional, Tuple
-from typing import List, Optional, Tuple
 
-import numpy as np
 import numpy as np
 import torch
 from PIL import Image
@@ -13,24 +10,17 @@ from PIL import Image
 from src.datasets.base_dataset import BaseDataset
 
 class FloodDataset(BaseDataset):
-class FloodDataset(BaseDataset):
     """
     Flood segmentation dataset with the same preprocessing as general_flood_v3
     (BaseDataset pipeline), but files are discovered by scanning directories
     instead of reading a list file.
     """
 
-
     class_names = ["background", "flood"]
     color_list = [[0, 0, 0], [1, 1, 1]]
 
     def __init__(
         self,
-        root: Optional[str] = None,
-        split: Optional[str] = None,
-        # backward-compatible alias for some notebooks
-        root_dir: Optional[str] = None,
-        # optional transform argument kept for API compatibility (not used here)
         root: Optional[str] = None,
         split: Optional[str] = None,
         # backward-compatible alias for some notebooks
@@ -50,7 +40,6 @@ class FloodDataset(BaseDataset):
         return_or_dims: bool = False,
         strict_pairing: bool = False,
         mask_suffix_patterns: Optional[List[str]] = None,
-        list_path: Optional[str] = None,
         list_path: Optional[str] = None,
     ):
         # Accept either `root` or `root_dir` for compatibility with examples
@@ -77,13 +66,7 @@ class FloodDataset(BaseDataset):
         self.flip = flip
         self.bd_dilate_size = bd_dilate_size
         self.return_or_dims = return_or_dims
-        self.num_classes = num_classes
-        self.multi_scale = multi_scale
-        self.flip = flip
-        self.bd_dilate_size = bd_dilate_size
-        self.return_or_dims = return_or_dims
 
-        # filename alignment
         # filename alignment
         self.strict_pairing = strict_pairing
         self.mask_suffix_patterns = mask_suffix_patterns or [
@@ -97,41 +80,22 @@ class FloodDataset(BaseDataset):
             r"-ann$",
             r"Ids$",
             r"Ids_?$",
-            r"_mask$",
-            r"-mask$",
-            r"_label$",
-            r"-label$",
-            r"_gt$",
-            r"-gt$",
-            r"_ann$",
-            r"-ann$",
-            r"Ids$",
-            r"Ids_?$",
         ]
-        self._mask_suffix_re = re.compile(
-            "|".join(self.mask_suffix_patterns), flags=re.IGNORECASE
-        )
+        self._mask_suffix_re = re.compile("|".join(self.mask_suffix_patterns), flags=re.IGNORECASE)
 
-        # gather files (non-recursive)
-        img_exts  = (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG")
-        mask_exts = (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG")
+        self.list_path = list_path
 
-        image_files_all = [Path(self.image_dir, f) for f in os.listdir(self.image_dir) if f.endswith(img_exts)]
-        mask_files_all  = [Path(self.mask_dir,  f) for f in os.listdir(self.mask_dir)  if f.endswith(mask_exts)]
-        image_files_all = natsort.natsorted(image_files_all)
-        mask_files_all  = natsort.natsorted(mask_files_all)
+        # Prefer explicit list files (matches general_flood_v3 evaluation) for deterministic pairing
+        if self.list_path is not None:
+            self.files = self._files_from_list(self.list_path)
+        else:
+            self.files = self._scan_and_pair()
+        self.class_weights = None
 
-        def stem_no_ext(p: Path) -> str:
-            """Return the filename stem with trailing underscores removed.
+    # pairing helpers
+    def _stem_no_ext(self, p: Path) -> str:
+        return p.stem.rstrip("_")
 
-            This makes stems like 'image_133_' normalize to 'image_133' so they match
-            masks that may be named 'image_133Ids_.jpg' after mask-suffix normalization.
-            """
-            return p.stem.rstrip("_")
-
-    def _norm_mask_stem(self, s: str) -> str:
-        s2 = self._mask_suffix_re.sub("", s)
-        return s2.rstrip("_")
     def _norm_mask_stem(self, s: str) -> str:
         s2 = self._mask_suffix_re.sub("", s)
         return s2.rstrip("_")
@@ -152,33 +116,25 @@ class FloodDataset(BaseDataset):
         img_groups = {}
         for p in image_files_all:
             k = self._stem_no_ext(p)
-            k = self._stem_no_ext(p)
             img_groups.setdefault(k, []).append(p)
         for k in list(img_groups.keys()):
-            img_groups[k].sort()
             img_groups[k].sort()
 
         if self.strict_pairing:
             mask_groups = {}
             for p in mask_files_all:
                 k = self._stem_no_ext(p)
-                k = self._stem_no_ext(p)
                 mask_groups.setdefault(k, []).append(p)
             for k in list(mask_groups.keys()):
-                mask_groups[k].sort()
                 mask_groups[k].sort()
         else:
             mask_groups = {}
             for p in mask_files_all:
                 k = self._norm_mask_stem(self._stem_no_ext(p))
-                k = self._norm_mask_stem(self._stem_no_ext(p))
                 mask_groups.setdefault(k, []).append(p)
             for k in list(mask_groups.keys()):
                 mask_groups[k].sort()
-                mask_groups[k].sort()
 
-        files = []
-        common_keys = [s for s in sorted(img_groups.keys()) if s in mask_groups]
         files = []
         common_keys = [s for s in sorted(img_groups.keys()) if s in mask_groups]
         for k in common_keys:
