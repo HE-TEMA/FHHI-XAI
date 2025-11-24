@@ -10,17 +10,16 @@ Data and models are available on Google Drive https://drive.google.com/drive/fol
 
 Path for data is `datasets/data`.
 
-#### 1. U-Net model: 
-- Checkpoint: Checkpoints/unet_flood.pt
-- Dataset: Data/General_Flood_v3.zip
-- Task: specifically for this model - flood detection
+#### 1.PIDNet model: 
+- Checkpoint: Checkpoints/flood_model.pt
+- Dataset: Data/flood_segmentation.zip
+- Task: specifically for this model - flood segmentation
 
 #### 2. YOLOv6s6 model:
 - Checkpoint: Checkpoints/best_v6s6_ckpt.pt
 - Dataset: Data/PersonCarDetectionData 
 - Task: person and car detection
 
-#### 3. PIDNet model: not yet available
 
 
 ### Build the Docker image
