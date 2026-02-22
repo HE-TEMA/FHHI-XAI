@@ -359,7 +359,7 @@ class Explanator:
             exp_box = {}
 
             exp_box["object_id"] = prediction_num
-            exp_box["bbox"] = boxes_list[prediction_num]
+            exp_box["bbox"] = [int(v) for v in boxes_list[prediction_num]]
             class_id = class_ids[prediction_num].item()
             confidence = confidences[prediction_num].item()
             exp_box["class_id"] = class_id
