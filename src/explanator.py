@@ -346,7 +346,7 @@ class Explanator:
         # Rescale boxes to original image coordinates
         boxes_np = boxes[0].cpu().detach().numpy()  # Shape: [N, 4]
         boxes_rescaled = rescale_boxes(boxes_np, letterbox_shape, original_shape)
-        boxes_list = boxes_rescaled.tolist()
+        boxes_list = boxes_rescaled.astype(int).tolist()
 
         class_ids = scores[0].argmax(dim=1)
         confidences = scores[0].max(dim=1).values
@@ -359,7 +359,7 @@ class Explanator:
             exp_box = {}
 
             exp_box["object_id"] = prediction_num
-            exp_box["bbox"] = [int(v) for v in boxes_list[prediction_num]]
+            exp_box["bbox"] = boxes_list[prediction_num]
             class_id = class_ids[prediction_num].item()
             confidence = confidences[prediction_num].item()
             exp_box["class_id"] = class_id
