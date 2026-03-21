@@ -1,0 +1,12 @@
+{
+  "class_id": 0,
+  "n_points_plotted": 1998,
+  "prototypes": [
+    1972,
+    2692,
+    3314,
+    8
+  ],
+  "has_test": true,
+  "reducer": "UMAP"
+}
