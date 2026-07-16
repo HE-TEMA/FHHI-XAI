@@ -9,6 +9,7 @@ import traceback
 
 from src.explanator import Explanator
 from src.minio_client import MinIOClient, FHHI_MINIO_BUCKET, NAPLES_MINIO_BUCKET
+from src.kpi_logging import build_minio_object_name
 from common_app_funcs import update_entity, get_bm_id, get_alert_ref_id,get_flight_number,get_uav_id, update_job_status, get_job_status, get_redis_conn, get_job_queue
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
@@ -47,12 +48,49 @@ def process_image_task(entity_type, image_bucket, image_filename, task_id, bm_id
         # Generate explanation
         logging.info(f"Task {task_id}: Explaining entity")
         explanation_entity, explanation_images, exp_img_filenames = explanator.explain(entity_type, image_bucket, image_filename, img, bm_id=bm_id,uav_id=uav_id, flight_number=flight_number, alert_ref=alert_ref)
+
+        if explanation_entity is None:
+            logging.info(f"Task {task_id}: No detections found; skipping PCX upload and Orion update")
+            job_status = {
+                'status': 'completed',
+                'progress': 100,
+                'message': 'No valid detections found; no explanation entity generated.',
+                'explanation_images': []
+            }
+            update_job_status(redis_conn, task_id, job_status)
+            return
         
         # Upload explanation images
         logging.info(f"Task {task_id}: Uploading explanation images to MinIO")
         for explanation_image, explanation_image_filename in zip(explanation_images, exp_img_filenames):
             minio_client.upload_image(FHHI_MINIO_BUCKET, explanation_image_filename, explanation_image)
-        
+
+        if explanator.latest_kpi_log_paths:
+            logging.info(f"Task {task_id}: Uploading KPI logs to MinIO")
+            for local_log_path in explanator.latest_kpi_log_paths:
+                if os.path.exists(local_log_path):
+                    object_name = build_minio_object_name(local_log_path)
+                    logging.info(
+                        "Task %s: KPI upload candidate local=%s object=%s bytes=%s",
+                        task_id,
+                        local_log_path,
+                        object_name,
+                        os.path.getsize(local_log_path),
+                    )
+                    minio_client.upload_text_file(
+                        FHHI_MINIO_BUCKET,
+                        object_name,
+                        local_log_path,
+                    )
+                    logging.info(
+                        "Task %s: KPI upload completed local=%s object=%s",
+                        task_id,
+                        local_log_path,
+                        object_name,
+                    )
+                else:
+                    logging.warning("Task %s: KPI log missing local=%s", task_id, local_log_path)
+
         # Send explanation to Orion
         logging.info(f"Task {task_id}: Sending explanation entity to Orion")
         orion_response = update_entity(explanation_entity)

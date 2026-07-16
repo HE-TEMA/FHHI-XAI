@@ -18,8 +18,9 @@ from sklearn.mixture import GaussianMixture
 
 # If you need CRP/PCX utilities, ensure your sys.path includes their roots
 sys.path.append("..")
-from LCRP.utils.render import vis_opaque_img_border, vis_opaque_img_border_v2
+from LCRP.utils.render import vis_opaque_img_border
 from crp.image import imgify
+from crp.helper import load_statistics
 
 
 # -----------------------------
@@ -43,8 +44,46 @@ def vis_opaque_img_border_safe(data_batch, heatmaps, rf, **kwargs):
     return vis_opaque_img_border(data_cpu, heatmaps_cpu, rf, **kwargs)
 
 
+def _get_class_max_reference(fv, concept_ids, layer_name, class_id, composite, n_ref):
+    """Render references drawn only from the requested class statistics."""
+    try:
+        d_sorted, _, rf_sorted = load_statistics(fv.RelStats.PATH, layer_name, int(class_id))
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Class-specific CRP statistics are missing for class_id={class_id}, layer={layer_name!r}. "
+            "Run the glocal analysis for both car and person before generating explanations; "
+            "global references are intentionally not used because they can mix classes."
+        ) from exc
+
+    refs = {}
+    for concept_id in map(int, concept_ids):
+        d_indices = d_sorted[:n_ref, concept_id]
+        neuron_indices = rf_sorted[:n_ref, concept_id]
+        data, _ = fv.get_data_concurrently(d_indices, preprocessing=True)
+        raw_data, _ = fv.get_data_concurrently(d_indices, preprocessing=False)
+        targets = np.full(len(d_indices), int(class_id), dtype=int)
+        heatmaps = fv._attribution_on_reference(
+            data,
+            concept_id,
+            layer_name,
+            composite,
+            True,
+            neuron_indices,
+            batch_size=1,
+            targets=targets,
+        )
+        refs[concept_id] = vis_opaque_img_border_safe(
+            raw_data.detach(), heatmaps.detach(), True
+        )
+    return refs
+
+
 def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_imgs_save_path="output/ref_imgs/"):
-    ref_imgs_save_path = os.path.join(ref_imgs_save_path, f"{layer_name}_class_{class_id}.h5")
+    # v2 caches are built from class-specific RelStats. Never reuse the old files,
+    # whose names contained a class ID but whose contents came from global maxima.
+    ref_imgs_save_path = os.path.join(
+        ref_imgs_save_path, f"{layer_name}_class_{class_id}_class_filtered_v2.h5"
+    )
     os.makedirs(os.path.dirname(ref_imgs_save_path), exist_ok=True)
 
     ref_imgs = {}
@@ -64,8 +103,9 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
 
             if missing_keys:
                 print(f"Calculating and saving missing reference images for keys: {missing_keys}")
-                new_refs = fv.get_max_reference([int(k) for k in missing_keys], layer_name, "relevance", (0, n_ref),
-                                                composite=composite, rf=True, plot_fn=vis_opaque_img_border, batch_size=2)
+                new_refs = _get_class_max_reference(
+                    fv, [int(k) for k in missing_keys], layer_name, class_id, composite, n_ref
+                )
                 for key, images_list in new_refs.items():
                     group = f.create_group(str(key))
                     if len(images_list) < n_ref:
@@ -80,8 +120,9 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
                             print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
     else:
         print("Reference image file does not exist, calculating all.")
-        ref_imgs = fv.get_max_reference(topk_ind, layer_name, "relevance", (0, n_ref),
-                                        composite=composite, rf=True, plot_fn=vis_opaque_img_border)
+        ref_imgs = _get_class_max_reference(
+            fv, topk_ind, layer_name, class_id, composite, n_ref
+        )
         with h5py.File(ref_imgs_save_path, "w") as f:
             for key, images_list in ref_imgs.items():
                 group = f.create_group(str(key))
@@ -93,6 +134,9 @@ def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_
                         group.create_dataset(str(idx), data=arr)
                     else:
                         print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return ref_imgs
 

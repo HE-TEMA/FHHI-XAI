@@ -15,6 +15,7 @@
           "longitude": 6.986944
         }
       },
+
       "ImageBatchSize": {
         "type": "Property",
         "value": 10
@@ -49,7 +50,7 @@
       },
       "filename": {
         "type": "Property",
-        "value": "sv01/ece2fb042da0dfa1de0f98b171e0e013/1/DJI_20211023132249_0108_W.JPG"
+        "value": "sv01/4c9d2ee96e2915e52c5a3d3565813569/UAV_01/flight_1/set_10/DJI_20260610112236_0057_W.JPG"
       },
       "gimbal_parameters": {
         "type": "Property",
@@ -61,7 +62,7 @@
       },
       "minio_url": {
         "type": "Property",
-        "value": "https://storage.tema.digital-enabler.eng.it:443/use/sv01/ece2fb042da0dfa1de0f98b171e0e013/1/DJI_20211023132249_0108_W.JPG"
+        "value": "https://storage.tema.digital-enabler.eng.it:443/use/sv01/4c9d2ee96e2915e52c5a3d3565813569/UAV_01/flight_1/set_10/DJI_20260610112236_0057_W.JPG"
       }
     }
   ]

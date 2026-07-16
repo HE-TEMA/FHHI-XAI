@@ -14,6 +14,7 @@ import time
 
 # Import your existing modules
 from src.explanator import Explanator
+from src.kpi_logging import build_minio_object_name
 from src.minio_client import MinIOClient, FHHI_MINIO_BUCKET, NAPLES_MINIO_BUCKET
 from common_app_funcs import update_entity, get_bm_id, set_bm_id,get_uav_id,set_uav_id,get_flight_number,set_flight_number, set_alert_ref_id , get_alert_ref_id , update_job_status, get_job_status, get_redis_conn, get_job_queue
 from tasks import process_image_task
@@ -304,9 +305,9 @@ def post_data():
         src_image_bucket = entity["bucket"]["value"]
         
         # Submit tasks for both PersonVehicleDetection and FloodSegmentation
-        # entities_to_explain = ['PersonVehicleDetection']
+        entities_to_explain = ['PersonVehicleDetection']
         # entities_to_explain = ['FloodSegmentation']
-        entities_to_explain = ['FloodSegmentation', 'PersonVehicleDetection']
+        # entities_to_explain = ['FloodSegmentation', 'PersonVehicleDetection']
         
         task_ids = []
         for entity_type in entities_to_explain:
@@ -422,10 +423,43 @@ def post_data_old():
 
         app.logger.info("Explaining entity")
         explanation_entity, explanation_images, exp_img_filenames = explanator.explain(entity_type, entity, img)
+
+        if explanation_entity is None:
+            app.logger.info("No detections found; skipping explanation upload and Orion update")
+            return jsonify({
+                'message': 'No valid detections found; no explanation entity generated.',
+                'explanation_entity': None,
+                'orion_response': None,
+                'explanation_images': [],
+            }), 200
         
         app.logger.info("Uploading explanation images to MinIO")
         for explanation_image, explanation_image_filename in zip(explanation_images, exp_img_filenames):
             minio_client.upload_image(FHHI_MINIO_BUCKET, explanation_image_filename, explanation_image)
+
+        if explanator.latest_kpi_log_paths:
+            app.logger.info("Uploading KPI logs to MinIO")
+            for local_log_path in explanator.latest_kpi_log_paths:
+                if os.path.exists(local_log_path):
+                    object_name = build_minio_object_name(local_log_path)
+                    app.logger.info(
+                        "KPI upload candidate local=%s object=%s bytes=%s",
+                        local_log_path,
+                        object_name,
+                        os.path.getsize(local_log_path),
+                    )
+                    minio_client.upload_text_file(
+                        FHHI_MINIO_BUCKET,
+                        object_name,
+                        local_log_path,
+                    )
+                    app.logger.info(
+                        "KPI upload completed local=%s object=%s",
+                        local_log_path,
+                        object_name,
+                    )
+                else:
+                    app.logger.warning("KPI log missing local=%s", local_log_path)
 
         app.logger.info("Sending explanation entity to Orion")
         orion_response = update_entity(explanation_entity)

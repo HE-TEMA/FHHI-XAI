@@ -32,6 +32,43 @@ import joblib
 from PIL import ImageDraw
 from src.pcx_helper import get_ref_images, get_detection_crop, get_detection_crop_input
 from src.letterbox_utils import rescale_boxes
+from src.yolo_class_mapping import (
+    class_matched_box_or_fallback as _class_matched_box_or_fallback,
+    class_name as _class_name,
+    matching_detection_index as _matching_detection_index,
+    resolve_display_class_names as _resolve_display_class_names,
+)
+
+
+def _heatmap_is_low_signal(heatmap_tensor, abs_threshold=1e-6):
+    if heatmap_tensor is None:
+        return True
+    t = heatmap_tensor.detach().float().cpu() if torch.is_tensor(heatmap_tensor) else torch.as_tensor(heatmap_tensor).float()
+    if t.numel() == 0:
+        return True
+    abs_max = float(t.abs().max().item())
+    if abs_max <= abs_threshold:
+        return True
+    pos_sum = float(t.clamp(min=0).sum().item())
+    neg_sum = float((-t.clamp(max=0)).sum().item())
+    return pos_sum <= neg_sum
+
+
+def _show_low_signal_box(ax, message="relevance too small\nor object too small"):
+    ax.imshow(np.ones((150, 150, 3), dtype=np.float32))
+    rect = patches.Rectangle((0, 0), 149, 149, linewidth=2.5, edgecolor="#cc3300", facecolor="#fff4ee", alpha=0.98)
+    ax.add_patch(rect)
+    ax.text(
+        75, 75, message,
+        ha="center", va="center",
+        fontsize=8, color="#cc3300", fontweight="bold",
+        wrap=True
+    )
+    ax.set_xlim([0, 150])
+    ax.set_ylim([149, 0])
+    ax.set_xticks([])
+    ax.set_yticks([])
+
 
 def plot_pcx_explanations(
     class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
@@ -42,12 +79,25 @@ def plot_pcx_explanations(
 
     # Generate the explanation figure
     fig = plot_one_image_pcx_explanation(
-        model_name, model, img, dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
-        ref_imgs_path, output_dir_pcx, output_dir_crp)
+        model_name=model_name,
+        model=model,
+        img=img,
+        orig_img=img,
+        dataset=dataset,
+        orig_dataset=dataset,
+        class_id=class_id,
+        n_concepts=n_concepts,
+        n_refimgs=n_refimgs,
+        num_prototypes=num_prototypes,
+        prediction_num=prediction_num,
+        layer_name=layer_name,
+        ref_imgs_path=ref_imgs_path,
+        output_dir_pcx=output_dir_pcx,
+        output_dir_crp=output_dir_crp,
+    )
 
     # Display and save the plot
-    plt.figure(fig)
-    plt.tight_layout()
+    fig.tight_layout()
     plot_dir = f"{output_dir_pcx}/pcx_plots"
     os.makedirs(plot_dir, exist_ok=True)
     safe_layer = layer_name.replace('.', '_')
@@ -60,8 +110,9 @@ def plot_pcx_explanations(
     )
     fullpath = os.path.join(plot_dir, fname)
     fig.savefig(fullpath, dpi=200, bbox_inches='tight')
+    print(f"Saved PCX plot to: {fullpath}")
     plt.show()
-    plt.close(fig)
+    return fig
 
 
 def plot_one_image_pcx_explanation(
@@ -108,14 +159,31 @@ def plot_one_image_pcx_explanation(
         with open(meta_path, "r") as f:
             meta = json.load(f)
     else:
-        # Fallback: assume 1:1 mapping (old format)
-        meta = [{"dataset_idx": i, "box_idx": 0} for i in range(len(attributions))]
-        logger.warning(f"No metadata file found at {meta_path}, assuming 1:1 mapping")
+        raise FileNotFoundError(
+            f"Missing required metadata file: {meta_path}. "
+            "YOLO PCX prototypes require per-detection metadata (dataset_idx, box_idx, cls, box). "
+            "Regenerate the PCX attributions with metadata before plotting."
+        )
+
+    if len(meta) != len(attributions):
+        raise ValueError(
+            f"Metadata length mismatch for class {class_id} in layer {layer_name}: "
+            f"{len(meta)} meta rows vs {len(attributions)} attribution rows."
+        )
+
+    bad_cls_rows = [i for i, row in enumerate(meta) if int(row.get("cls", class_id)) != int(class_id)]
+    if bad_cls_rows:
+        raise ValueError(
+            f"Found {len(bad_cls_rows)} metadata rows whose cls does not match requested class_id={class_id}. "
+            "Regenerate the PCX artifacts for this class."
+        )
 
     # Training GMM based on relevances if not done already
     # Initialize Gaussian Mixture Model (GMM) with specified number of prototypes as components
-    cache_path = f'{output_dir_pcx}/gmms/gmm_cache_{layer_name}_class_{class_id}.pkl'
-    prototype_cache_path = f'{output_dir_pcx}/gmm_prototypes/prototype_gmms_cache_{layer_name}_class_{class_id}.pkl'
+    # Include K in cache identity. Without this, increasing the configured
+    # prototype count silently reloads an older GMM with a different K.
+    cache_path = f'{output_dir_pcx}/gmms/gmm_cache_{layer_name}_class_{class_id}_protos_{num_prototypes}.pkl'
+    prototype_cache_path = f'{output_dir_pcx}/gmm_prototypes/prototype_gmms_cache_{layer_name}_class_{class_id}_protos_{num_prototypes}.pkl'
 
     # Create directories if they do not exist
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -179,7 +247,13 @@ def plot_one_image_pcx_explanation(
     m2 = np.sum(y * y, axis=1)  # Mahalanobis^2
 
     closest_row = int(np.argmin(m2))
-    ds_idx = int(meta[closest_row]["dataset_idx"])
+    prototype_meta = meta[closest_row]
+    ds_idx = int(prototype_meta["dataset_idx"])
+    if "box" not in prototype_meta:
+        raise ValueError(
+            f"Prototype metadata row {closest_row} for class_id={class_id} has no fallback box. "
+            "Regenerate PCX artifacts with per-detection boxes."
+        )
 
     # Validate before accessing
     if ds_idx >= len(dataset):
@@ -188,6 +262,30 @@ def plot_one_image_pcx_explanation(
 
     data_p, target_p = dataset[ds_idx]
     data_p = data_p[None, ...].to(device)
+
+    # Resolve the prototype detection before computing its heatmaps.  The same
+    # detection index and box must drive attribution, localization and rendering.
+    prototype_scores_all, prototype_boxes_all = model.predict_with_boxes(data_p)
+    prototype_scores = prototype_scores_all[0]
+    sample_predicted_boxes = prototype_boxes_all[0]
+    try:
+        prototype_prediction_index = _matching_detection_index(prototype_scores, class_id)
+        predicted_boxes_p = sample_predicted_boxes[prototype_prediction_index]
+        used_prototype_fallback = False
+    except ValueError:
+        predicted_boxes_p, used_prototype_fallback = _class_matched_box_or_fallback(
+            prototype_scores,
+            sample_predicted_boxes,
+            class_id=class_id,
+            fallback_class_id=prototype_meta["cls"],
+            fallback_box=prototype_meta["box"],
+        )
+        prototype_prediction_index = int(prototype_meta.get("box_idx", 0))
+        if not 0 <= prototype_prediction_index < len(sample_predicted_boxes):
+            raise ValueError(
+                f"Stored prototype box_idx={prototype_prediction_index} is unavailable for "
+                f"dataset sample {ds_idx}; regenerate the class-{class_id} PCX metadata."
+            )
 
     # Getting top concepts/neurons for the given image in the given layer
     topk = torch.topk(channel_rels[0], n_concepts)
@@ -202,10 +300,17 @@ def plot_one_image_pcx_explanation(
 
     attribution.take_prediction = prediction_num
     cond_heatmap, _, _, _ = attribution(data.requires_grad_(), conditions, composite, exclude_parallel=True)
-    local_logger.debug(f"Running conditional attribution on the input image, {attribution.take_prediction}")
+    logger.debug(f"Running conditional attribution on the input image, {attribution.take_prediction}")
 
     # ─── define cache dir & files ────────────────────────────────
-    cache_dir = os.path.join(output_dir_pcx, "cache", layer_name, f"class_{class_id}_protos_{num_prototypes}")
+    concept_key = "-".join(str(int(c)) for c in topk_ind)
+    cache_dir = os.path.join(
+        output_dir_pcx,
+        "cache_v2",
+        layer_name,
+        f"class_{class_id}_protos_{num_prototypes}",
+        f"row_{closest_row}_ds_{ds_idx}_box_{prototype_prediction_index}_concepts_{concept_key}",
+    )
     os.makedirs(cache_dir, exist_ok=True)
     heatmap_cache = os.path.join(cache_dir, f"attr_p_heatmap_protos{num_prototypes}.npy")
     cond_cache = os.path.join(cache_dir, f"cond_heatmap_p_protos{num_prototypes}.npy")
@@ -220,14 +325,14 @@ def plot_one_image_pcx_explanation(
     else:
         logger.debug("Cache not found, computing fresh")
         # compute them fresh
-        attribution.take_prediction = 0
+        attribution.take_prediction = prototype_prediction_index
         cond_heatmap_p, _, _, _ = attribution(
             data_p.requires_grad_(),
             conditions,
             composite,
             exclude_parallel=True
         )
-        attribution.take_prediction = 0
+        attribution.take_prediction = prototype_prediction_index
         attr_p = attribution(
             data_p.requires_grad_(),
             condition,
@@ -248,30 +353,16 @@ def plot_one_image_pcx_explanation(
         logger.debug("Saved prototype heatmaps to cache")
 
 
-    # This was here previously
-    # predicted_boxes = model.predict_with_boxes(data)[1][0]
-    # Rewriting for clarity
     input_scores, batch_predicted_boxes = model.predict_with_boxes(data)
-    pred_confidence = input_scores[0, prediction_num, class_id].item()
+    sample_scores = input_scores[0]
     sample_predicted_boxes = batch_predicted_boxes[0]
+    sample_predicted_classes = sample_scores.argmax(dim=1)
+    selected_index = _matching_detection_index(sample_scores, class_id, prediction_num)
+    pred_confidence = sample_scores[selected_index, class_id].item()
+    predicted_boxes = sample_predicted_boxes[selected_index]
 
-    # This is already predicted as class_id
-    predicted_boxes = sample_predicted_boxes[prediction_num]
-
-    # predicted_classes = attr.prediction.argmax(dim=2)[0]
-    # sorted = attr.prediction.max(dim=2)[0].argsort(descending=True)[0]
-    # predicted_classes = predicted_classes[sorted]
-    # predicted_boxes = predicted_boxes[sorted]
-    # # Filter boxes for the desired class.
-    # filtered_boxes = [b for b, c in zip(predicted_boxes, predicted_classes) if c == class_id]
-
-    # try:
-    #     predicted_boxes = filtered_boxes[prediction_num]
-    # except IndexError:
-    #     print(f"Warning: No bounding box found for class {class_id} at index {prediction_num}.")
-    #     raise IndexError(f"No bounding box found for class {class_id} at index {prediction_num}.")
-
-    pred_label = dataset.class_names[class_id]
+    display_class_names = _resolve_display_class_names(model_name, dataset)
+    pred_label = _class_name(display_class_names, class_id)
     boxes = predicted_boxes.clone().detach().float()[None]
     colors = ["#ffcc00" for _ in boxes]
     result = draw_bounding_boxes((dataset.reverse_normalization(data[0])).type(torch.uint8),
@@ -290,7 +381,7 @@ def plot_one_image_pcx_explanation(
     box_width = x_max - x_min
     box_height = y_max - y_min
     # choose zoom factor based on class
-    zoom_factor = 0.4 if class_id == 1 else 2.0
+    zoom_factor = 0.4 if pred_label == "car" else 2.0
     # compute margin
     margin_x = int(zoom_factor * box_width)
     margin_y = int(zoom_factor * box_height)
@@ -306,12 +397,13 @@ def plot_one_image_pcx_explanation(
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
     draw.rectangle(adjusted_box, outline="yellow", width=2)
 
-    # This was here previously
-    # predicted_boxes = model.predict_with_boxes(data_p)[1][0]
-    # Rewriting for clarity
-    _, batch_predicted_boxes = model.predict_with_boxes(data_p)
-    sample_predicted_boxes = batch_predicted_boxes[0]
-    predicted_boxes_p = sample_predicted_boxes[0]
+    if used_prototype_fallback:
+        logger.warning(
+            "Prototype sample %s has no live %s detection; using its stored, class-validated %s box.",
+            ds_idx,
+            pred_label,
+            pred_label,
+        )
 
     # predicted_classes = attr_p.prediction.argmax(dim=2)[0]
     # print(f"Predicted boxes: {predicted_boxes}")
@@ -342,7 +434,7 @@ def plot_one_image_pcx_explanation(
     box_width = x_max - x_min
     box_height = y_max - y_min
     # choose zoom factor based on class
-    zoom_factor = 0.4 if class_id == 1 else 2.0
+    zoom_factor = 0.4 if pred_label == "car" else 2.0
     # compute margin
     margin_x = int(zoom_factor * box_width)
     margin_y = int(zoom_factor * box_height)
@@ -362,7 +454,7 @@ def plot_one_image_pcx_explanation(
     inW, inH = int(data.shape[-1]), int(data.shape[-2])
 
     # class-specific context (matches your earlier idea: more zoom for class 0)
-    ctx = 2.0 if class_id == 0 else 0.4
+    ctx = 0.4 if pred_label == "car" else 2.0
 
     detection_crop_input = get_detection_crop_input(
         orig_img=orig_img,  # the original full-resolution image you passed into the function
@@ -372,45 +464,10 @@ def plot_one_image_pcx_explanation(
         draw_box=True,
     )
 
-    # Get original prototype image from orig_dataset
-    orig_img_p, _ = orig_dataset[ds_idx]
-
-    # Get original shape for prototype
-    if isinstance(orig_img_p, np.ndarray):
-        original_shape_p = orig_img_p.shape[:2]  # (H, W)
-    elif isinstance(orig_img_p, Image.Image):
-        original_shape_p = (orig_img_p.size[1], orig_img_p.size[0])  # PIL (W,H) -> (H,W)
-    else:
-        # Assume it's a tensor (C, H, W) or similar - unlikely for orig_dataset
-        original_shape_p = orig_img_p.shape[-2:]
-
-    # Get letterbox shape for prototype from transformed dataset
-    letterbox_shape_p = (data_p.shape[2], data_p.shape[3])  # (H, W) from (B, C, H, W)
-
-    # Get boxes in letterbox coordinates
-    _, batch_predicted_boxes_p = model.predict_with_boxes(data_p)
-    sample_predicted_boxes_p = batch_predicted_boxes_p[0]
-
-    # Rescale boxes to original prototype image coordinates
-    boxes_np_p = sample_predicted_boxes_p.cpu().detach().numpy()
-    boxes_rescaled_p = rescale_boxes(boxes_np_p, letterbox_shape_p, original_shape_p)
-    predicted_boxes_p_original = boxes_rescaled_p[0]  # First detection for prototype
-
-    # Convert BGR to RGB if needed (orig_dataset might return BGR)
-    if isinstance(orig_img_p, np.ndarray):
-        orig_img_p_rgb = orig_img_p[:, :, ::-1].copy()
-    else:
-        orig_img_p_rgb = orig_img_p
-
-    # Get prototype crop from original high-res image
-    ctx_p = 2.0 if class_id == 0 else 0.4
-    detection_crop_p = get_detection_crop_input(
-        orig_img=orig_img_p_rgb,
-        box=predicted_boxes_p_original,
-        input_size=original_shape_p[::-1],  # (W, H)
-        context=ctx_p,
-        draw_box=True,
-    )
+    # The zoomed detection must be a literal crop of the same rendered prototype
+    # image and the same box.  Reloading orig_dataset and rescaling a second time
+    # allowed the full-image box and zoomed crop to drift to different objects.
+    detection_crop_p = cropped_img_prot.copy()
 
     # --- Defining plot ---
     width_ratios = [1, 1, n_refimgs/4, 1, 1, 1]
@@ -439,9 +496,12 @@ def plot_one_image_pcx_explanation(
                     ax.imshow(img_)
                 elif r == 1:
                     ax.set_title("heatmap")
-                    img = imgify(attr.heatmap.detach().cpu(), cmap="bwr", symmetric=True, level=5)
-                    img = img.resize((150, 150), Image.BILINEAR)
-                    ax.imshow(img)
+                    if _heatmap_is_low_signal(attr.heatmap):
+                        _show_low_signal_box(ax)
+                    else:
+                        img = imgify(attr.heatmap.detach().cpu(), cmap="bwr", symmetric=True, level=5)
+                        img = img.resize((150, 150), Image.BILINEAR)
+                        ax.imshow(img)
                 elif r == 2:
                     ax.set_title("Detection", fontsize=10)
                     label_str = f"{pred_label} {pred_confidence*100:.1f}%"
@@ -465,20 +525,12 @@ def plot_one_image_pcx_explanation(
                     ax.set_xlabel("log-likelihood")
                     ax.set_xticks([]); ax.set_yticks([])
 
-                    # Define threshold for outlier detection
-                    lower_threshold = np.percentile(scores, 1)
-                    logger.debug(
-                        f"[OUTLIER] strategy=global_p5 | p5={lower_threshold:.3f} | score_sample={float(score_sample):.3f}")
-                    outlier_text = "Outlier" if score_sample < lower_threshold else "Ordinary"
-                    logger.debug(f"[OUTLIER] result={outlier_text}")
-
-                    # Determine if the sample is an outlier
-                    outlier_text = "Outlier" if score_sample < lower_threshold else "Ordinary"
+                    outlier_text = "Ordinary"
                     bbox_props = dict(boxstyle="round,pad=0.3",
-                                      edgecolor="red" if outlier_text == "Outlier" else "green",
-                                      facecolor="red" if outlier_text == "Outlier" else "green", alpha=0.3, linewidth=4)
+                                      edgecolor="green",
+                                      facecolor="green", alpha=0.3, linewidth=4)
                     ax.text(0.5, -0.35, outlier_text, transform=ax.transAxes, ha="center", fontsize=10,
-                            fontweight='bold', color="red" if outlier_text == "Outlier" else "green", bbox=bbox_props)
+                            fontweight='bold', color="green", bbox=bbox_props)
 
                 else:
                     ax.axis("off")
@@ -487,9 +539,12 @@ def plot_one_image_pcx_explanation(
             elif c == 1:
                 if r == 0:
                     ax.set_title("Input localization")
-                cond_h =imgify(cond_heatmap[r], symmetric=True, cmap="bwr", padding=True, level=5)
-                cond_h = cond_h.resize((150, 150), Image.BILINEAR)
-                ax.imshow(cond_h)
+                if _heatmap_is_low_signal(cond_heatmap[r]):
+                    _show_low_signal_box(ax)
+                else:
+                    cond_h =imgify(cond_heatmap[r], symmetric=True, cmap="bwr", padding=True, level=5)
+                    cond_h = cond_h.resize((150, 150), Image.BILINEAR)
+                    ax.imshow(cond_h)
                 ax.set_ylabel(f"concept {topk_ind[r]}\n relevance: {(channel_rels[0][topk_ind[r]] * 100):2.1f}")
 
             # --- col 2: reference imgs grid ---
@@ -531,7 +586,10 @@ def plot_one_image_pcx_explanation(
             elif c == 4:
                 if r == 0:
                     ax.set_title("Prot localization")
-                ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True, level=5))
+                if _heatmap_is_low_signal(cond_heatmap_p[r]):
+                    _show_low_signal_box(ax)
+                else:
+                    ax.imshow(imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", padding=True, level=5))
                 ax.yaxis.set_label_position("right")
                 ax.set_ylabel(f"concept {topk_ind[r]}\n"f"relevance: {mean[topk_ind[r]]*100:2.1f}")
 
@@ -542,9 +600,12 @@ def plot_one_image_pcx_explanation(
                     img_prototype = img_prototype.resize((150, 150), Image.BILINEAR)
                     ax.imshow(img_prototype)
                 elif r == 1:
-                    img = imgify(attr_p_heatmap, cmap="bwr", symmetric=True, level=5)
-                    img = img.resize((150, 150), Image.BILINEAR)
-                    ax.imshow(img)
+                    if _heatmap_is_low_signal(attr_p_heatmap):
+                        _show_low_signal_box(ax)
+                    else:
+                        img = imgify(attr_p_heatmap, cmap="bwr", symmetric=True, level=5)
+                        img = img.resize((150, 150), Image.BILINEAR)
+                        ax.imshow(img)
                 elif r == 2:
                     ax.set_title("detection")
                     ax.imshow(detection_crop_p)

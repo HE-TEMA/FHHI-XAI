@@ -3,6 +3,7 @@ import gc
 import sys
 import copy
 import warnings
+from typing import Optional
 import joblib
 import h5py
 import numpy as np
@@ -35,12 +36,13 @@ from crp.image import imgify
 #sys.path.append("/Users/heydari/Desktop/test/FHHI-XAI-PIDNET/")
 
 from src.glocal_analysis import run_analysis
-from src.datasets.flood_datase_crp import FloodDataset
+from src.datasets.flood_dataset_crp import FloodDataset
 from src.datasets.DLR_dataset import DatasetDLR
 from src.plot_crp_explanations import plot_explanations, plot_one_image_explanation
 from src.minio_client import MinIOClient
 from LCRP.models import get_model
 from src.device_utils import resolve_device, device_to_str
+from src.kpi_logging import sync_device, timed_section
 
 from contextlib import nullcontext
 
@@ -191,7 +193,7 @@ def _resize_array_to_panel(arr: np.ndarray) -> np.ndarray:
         return arr
 
 
-def _resize_mask_to_panel(mask) -> np.ndarray | None:
+def _resize_mask_to_panel(mask) -> Optional[np.ndarray]:
     """Resize a binary mask to the standard panel size for contour plotting."""
     try:
         if mask is None:
@@ -482,8 +484,11 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     scikit-learn, plotting and PIL operations.
     """
     active_device = _coerce_device(device)
+    sync_device(active_device)
+    full_start = time.perf_counter()
     non_blocking = active_device.type == "cuda"
     amp_enabled = precision == "autocast_fp16" and active_device.type == "cuda"
+    backward_time_s = 0.0
 
     # ensure model in eval and on correct device
     model = model.to(active_device)
@@ -548,14 +553,16 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     scores = gmm.score_samples(attributions_np)
     # raise ValueError(f"device: {device} data device {data.device} model device {model.device}")
     # Run attribution on the input image (this will happen on device)
-    with _amp_ctx():
-        attr = attribution(
-            data.requires_grad_(),
-            [{"y": class_id}],
-            composite,
-            record_layer=[layer_name],
-            init_rel=1,
-        )
+    with timed_section(active_device) as backward_timer:
+        with _amp_ctx():
+            attr = attribution(
+                data.requires_grad_(),
+                [{"y": class_id}],
+                composite,
+                record_layer=[layer_name],
+                init_rel=1,
+            )
+    backward_time_s = backward_timer.elapsed_s
 
     # Channel (neuron) relevance on the given layer for this image
     rel_tensor = attr.relevances[layer_name].detach()
@@ -1042,9 +1049,18 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 pass
 
     fig.subplots_adjust(left=0.08, right=0.975, wspace=0.12, hspace=0.38)
+    sync_device(active_device)
     setattr(fig, "_n_refimgs_used", effective_n_refimgs)
     setattr(fig, "_n_concepts_used", effective_n_concepts)
     setattr(fig, "_skip_prototype", skip_prototype)
+    setattr(
+        fig,
+        "_kpi_metrics",
+        {
+            "backward_time_s": backward_time_s,
+            "full_attribution_time_s": time.perf_counter() - full_start,
+        },
+    )
     channel_rels_plot = None
     img_cpu = None
     sample_cpu_for_plot = None

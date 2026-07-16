@@ -1,5 +1,15 @@
 # PCX-TEMA
 
+# GETING THE LOGS 
+
+curl -i -X POST http://localhost:8080/tfa02/post_data \
+  -H 'Content-Type: application/json' \
+  --data @tests/ImageMetadata.json
+docker logs explanation_tfa02 2>&1 | tail -n 1000000
+
+
+
+
 This repository contains the code for applying the PCX method for TEMA project. 
 
 ## Setting up
