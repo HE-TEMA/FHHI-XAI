@@ -35,6 +35,22 @@ logging.disable(logging.ERROR)
 # -------------------------
 # Small helpers
 # -------------------------
+def _extract_image_tensor_from_sample(sample):
+    """Return the image from a dataset sample, ignoring labels and metadata."""
+    if torch.is_tensor(sample):
+        return sample
+    if isinstance(sample, (tuple, list)) and sample:
+        image = sample[0]
+        if torch.is_tensor(image):
+            return image
+        if isinstance(image, np.ndarray):
+            return torch.from_numpy(image)
+    raise TypeError(
+        "Unable to extract an image tensor from the dataset sample; expected "
+        "a tensor or a non-empty tuple/list whose first item is a tensor or ndarray."
+    )
+
+
 def _layer_candidates(layer: str):
     cands = [layer]
     heads = ("final_layer", "seghead_p", "seghead_d")
@@ -307,7 +323,9 @@ def plot_pcx_explanations(
     output_dir_pcx: str,
     concept_ids: Optional[List[int]] = None):
     print("[plot_pcx_explanations] starting")
-    img, target = dataset[sample_id]
+    img = _extract_image_tensor_from_sample(dataset[sample_id])
+    if img.ndim == 4 and img.shape[0] == 1:
+        img = img[0]
     print(f"[plot_pcx_explanations] sample_id={sample_id} img.shape={tuple(img.shape)}")
 
     fig = plot_one_image_pcx_explanation(

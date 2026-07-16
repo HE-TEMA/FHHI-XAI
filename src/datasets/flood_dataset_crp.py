@@ -10,6 +10,14 @@ from PIL import Image
 from src.datasets.base_dataset import BaseDataset
 
 
+def _natural_path_key(path):
+    """Sort image_2 before image_10 while remaining case-insensitive."""
+    return [
+        int(part) if part.isdigit() else part.casefold()
+        for part in re.split(r"(\d+)", str(path))
+    ]
+
+
 class FloodDataset(BaseDataset):
     """
     Flood segmentation dataset with the same preprocessing and ignore-label
@@ -138,15 +146,15 @@ class FloodDataset(BaseDataset):
             for f in os.listdir(self.mask_dir)
             if f.endswith(mask_exts)
         ]
-        image_files_all.sort()
-        mask_files_all.sort()
+        image_files_all.sort(key=_natural_path_key)
+        mask_files_all.sort(key=_natural_path_key)
 
         img_groups = {}
         for p in image_files_all:
             k = self._stem_no_ext(p)
             img_groups.setdefault(k, []).append(p)
         for k in list(img_groups.keys()):
-            img_groups[k].sort()
+            img_groups[k].sort(key=_natural_path_key)
 
         if self.strict_pairing:
             mask_groups = {}
@@ -154,17 +162,20 @@ class FloodDataset(BaseDataset):
                 k = self._stem_no_ext(p)
                 mask_groups.setdefault(k, []).append(p)
             for k in list(mask_groups.keys()):
-                mask_groups[k].sort()
+                mask_groups[k].sort(key=_natural_path_key)
         else:
             mask_groups = {}
             for p in mask_files_all:
                 k = self._norm_mask_stem(self._stem_no_ext(p))
                 mask_groups.setdefault(k, []).append(p)
             for k in list(mask_groups.keys()):
-                mask_groups[k].sort()
+                mask_groups[k].sort(key=_natural_path_key)
 
         files = []
-        common_keys = [s for s in sorted(img_groups.keys()) if s in mask_groups]
+        common_keys = [
+            s for s in sorted(img_groups.keys(), key=_natural_path_key)
+            if s in mask_groups
+        ]
         for k in common_keys:
             imgs = img_groups[k]
             masks = mask_groups[k]
