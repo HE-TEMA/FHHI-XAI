@@ -18,3 +18,11 @@ output/
 .venv/
 .conda/*.h5
 *.h5
+*.output_original
+
+/output/
+/output_KAHY/
+/plots/
+/output_original/
+/output_BRK/
+KPIs.pdf

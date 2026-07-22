@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 # Add the parent directory to the Python path - bad practice, but it's just for the example
 import sys
 import logging
+import time
 from PIL import Image
 
 # Configure logging to display debug information
@@ -31,6 +32,7 @@ import matplotlib.patches as patches
 import joblib
 from PIL import ImageDraw
 from src.pcx_helper import get_ref_images, get_detection_crop, get_detection_crop_input
+from src.kpi_logging import sync_device, timed_section
 from src.letterbox_utils import rescale_boxes
 
 def plot_pcx_explanations(
@@ -73,6 +75,9 @@ def plot_one_image_pcx_explanation(
 
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    sync_device(device)
+    full_start = time.perf_counter()
+    backward_time_s = 0.0
     # Model has to be in eval state
     model.to(device)
     model.eval()
@@ -146,13 +151,15 @@ def plot_one_image_pcx_explanation(
 
     # Running attribution on the input image
     attribution.take_prediction = prediction_num
-    logger.debug(f"Running attribution on the input image, {attribution.take_prediction}") 
-    attr = attribution(
-            data,
-            condition,
-            composite,
-            record_layer=[layer_name],
-            init_rel=1)
+    logger.debug(f"Running attribution on the input image, {attribution.take_prediction}")
+    with timed_section(device) as backward_timer:
+        attr = attribution(
+                data,
+                condition,
+                composite,
+                record_layer=[layer_name],
+                init_rel=1)
+    backward_time_s = backward_timer.elapsed_s
 
     # Channel (neuron) relevance on the given layer for this image
     channel_rels = cc.attribute(attr.relevances[layer_name], abs_norm=True)
@@ -202,7 +209,7 @@ def plot_one_image_pcx_explanation(
 
     attribution.take_prediction = prediction_num
     cond_heatmap, _, _, _ = attribution(data.requires_grad_(), conditions, composite, exclude_parallel=True)
-    local_logger.debug(f"Running conditional attribution on the input image, {attribution.take_prediction}")
+    logger.debug(f"Running conditional attribution on the input image, {attribution.take_prediction}")
 
     # ─── define cache dir & files ────────────────────────────────
     cache_dir = os.path.join(output_dir_pcx, "cache", layer_name, f"class_{class_id}_protos_{num_prototypes}")
@@ -555,4 +562,9 @@ def plot_one_image_pcx_explanation(
 
     plt.tight_layout()
 
+    sync_device(device)
+    fig._kpi_metrics = {
+        "backward_time_s": backward_time_s,
+        "full_attribution_time_s": time.perf_counter() - full_start,
+    }
     return fig

@@ -12,6 +12,7 @@ import copy
 import logging
 from contextlib import contextmanager
 from functools import partial
+from statistics import mean
 
 from LCRP.models import get_model
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
@@ -23,6 +24,13 @@ from src.entities import get_person_vehicle_detection_explanation_entity, get_fl
 from src.minio_client import FHHI_MINIO_BUCKET
 from src.memory_logging import log_cuda_memory
 from src.letterbox_utils import letterbox_transform, rescale_boxes, check_img_size
+from src.kpi_logging import (
+    append_avg_window_record,
+    append_kpi_record,
+    build_kpi_record,
+    build_log_path,
+    timed_section,
+)
 from yolov6.data.data_augment import letterbox
 
 
@@ -30,6 +38,12 @@ from yolov6.data.data_augment import letterbox
 def _empty_cuda_cache():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _is_cuda_oom(exc):
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return "out of memory" in str(exc).lower()
 
 class Explanator:
     """Class that stores all loaded models together with all relevant data for generating CRP explanations.
@@ -74,6 +88,8 @@ class Explanator:
         self.forward_count = 0
         self.running_avg_backward_time = 0
         self.backward_count = 0
+        self._last_forward_time_ms = 0.0
+        self.latest_kpi_log_paths = []
 
     @property
     def prediction_times(self):
@@ -117,12 +133,14 @@ class Explanator:
         # new_average = old_average + (new_value - old_average) / new_count
         self.forward_count += 1
         self.running_avg_forward_time += (elapsed_time - self.running_avg_forward_time) / self.forward_count
+        self._last_forward_time_ms = elapsed_time
         self.logger.debug(f"Forward pass time: {elapsed_time:.2f} ms")
         self.logger.debug(f"Running average forward pass time: {self.running_avg_forward_time:.2f} ms")
 
     def explain(self, entity_type: str, original_image_bucket: str, original_image_filename: str, image: np.ndarray, bm_id, uav_id, flight_number, alert_ref):
         """Generate explanation for the given entity type and image."""
         log_cuda_memory(self.logger, f"BEFORE EXPLAIN {entity_type}")
+        self.latest_kpi_log_paths = []
 
         if entity_type not in self.VALID_ENTITY_TYPES:
             raise ValueError(f"Invalid entity type: {entity_type}. Must be one of {self.VALID_ENTITY_TYPES}")
@@ -158,6 +176,7 @@ class Explanator:
             model_name = "pidnet"
             # flood_model_path = os.path.join(self.project_root, "models", "flood_s_best_pidnet_modified.pt")
             self._flood_model = get_model(model_name=model_name)
+            self._flood_model.eval()
             log_cuda_memory(self.logger, "AFTER LOADING FLOOD MODEL")
         return self._flood_model
 
@@ -178,6 +197,7 @@ class Explanator:
     def explain_flood_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray, bm_id, uav_id, flight_number, alert_ref):
         """Generate flood segmentation explanation using PCX."""
         log_cuda_memory(self.logger, "FLOOD_SEG START")
+        original_entity_type = "FloodSegmentation"
 
         # Parameters
         class_id = 1  # Flood class ID
@@ -199,6 +219,12 @@ class Explanator:
         log_cuda_memory(self.logger, "AFTER IMAGE TRANSFORM")
 
         print("Shape after batch dimension:", image_tensor.shape)
+        self.flood_model.eval()
+
+        with timed_section(self.device) as prediction_timer:
+            with torch.no_grad():
+                _ = self.flood_model(image_tensor.unsqueeze(0))
+        prediction_time_s = prediction_timer.elapsed_s
 
         log_cuda_memory(self.logger, "BEFORE EXPLANATION GENERATION")
         used_n_refimgs = n_refimgs
@@ -218,12 +244,70 @@ class Explanator:
                 output_dir_pcx=output_dir_pcx,
                 precision="autocast_fp16" if (self.device == "cuda" and torch.cuda.is_available()) else "fp32",
             )
+        except Exception as exc:
+            if not (_is_cuda_oom(exc) and self.device == "cuda" and torch.cuda.is_available()):
+                raise
+            self.logger.warning("Flood explanation hit CUDA OOM; retrying on CPU: %s", exc)
+            gc.collect()
+            _empty_cuda_cache()
+            cpu_model = self.flood_model.to("cpu")
+            cpu_model.eval()
+            explanation_fig = plot_pcx_explanations_pidnet(
+                model_name,
+                cpu_model,
+                self.flood_dataset,
+                image_tensor=image_tensor.detach().cpu(),
+                layer_name=layer_name,
+                n_concepts=n_concepts,
+                n_refimgs=n_refimgs,
+                num_prototypes=num_prototypes,
+                ref_imgs_path=ref_imgs_path,
+                output_dir_crp=output_dir_crp,
+                output_dir_pcx=output_dir_pcx,
+                device=torch.device("cpu"),
+                precision="fp32",
+            )
+            self._flood_model = cpu_model
             used_n_refimgs = getattr(explanation_fig, "_n_refimgs_used", n_refimgs)
             used_n_concepts = getattr(explanation_fig, "_n_concepts_used", n_concepts)
         finally:
             # Release the input tensor as soon as the attribution run finishes
             del image_tensor
             _empty_cuda_cache()
+
+        used_n_refimgs = getattr(explanation_fig, "_n_refimgs_used", n_refimgs)
+        used_n_concepts = getattr(explanation_fig, "_n_concepts_used", n_concepts)
+        figure_kpis = getattr(explanation_fig, "_kpi_metrics", {})
+        backward_time_s = float(figure_kpis.get("backward_time_s", 0.0))
+        full_attribution_time_s = float(figure_kpis.get("full_attribution_time_s", 0.0))
+
+        pidnet_image_log = build_log_path(self.project_root, "pidnet_image_kpis.txt")
+        pidnet_avg5_log = build_log_path(self.project_root, "pidnet_image_kpis_avg5.txt")
+        append_kpi_record(
+            pidnet_image_log,
+            build_kpi_record(
+                model="pidnet",
+                entity_type=original_entity_type,
+                scope="image",
+                aggregation="raw",
+                image=original_image_filename,
+                prediction_time_s=prediction_time_s,
+                global_lcrp_time_s=backward_time_s,
+                global_total_time_s=full_attribution_time_s,
+                layer=layer_name,
+                n_concepts=used_n_concepts,
+                n_refimgs=used_n_refimgs,
+            ),
+        )
+        append_avg_window_record(
+            source_log_path=pidnet_image_log,
+            avg_log_path=pidnet_avg5_log,
+            model="pidnet",
+            entity_type=original_entity_type,
+            scope="image",
+            layer=layer_name,
+        )
+        self.latest_kpi_log_paths = [pidnet_image_log, pidnet_avg5_log]
 
         # fig is returned implicitly as part of this function; adapt if needed
         log_cuda_memory(self.logger, "AFTER EXPLANATION GENERATION")
@@ -233,7 +317,6 @@ class Explanator:
         gc.collect()
 
         # Prepare explanation entity
-        original_entity_type = "FloodSegmentation"
         explanation_image_filename = f"tfa02/{original_entity_type}/{original_image_filename}"
 
         explanation_entity = get_flood_segmentation_explanation_entity(
@@ -315,6 +398,10 @@ class Explanator:
         prototype_dict = {0: 3, 1: 4}
 
         mode = "relevance"
+        yolo_box_log = build_log_path(self.project_root, "yolo_box_kpis.txt")
+        yolo_box_avg5_log = build_log_path(self.project_root, "yolo_box_kpis_avg5.txt")
+        yolo_image_log = build_log_path(self.project_root, "yolo_image_kpis.txt")
+        yolo_avg5_log = build_log_path(self.project_root, "yolo_image_kpis_avg5.txt")
 
         crp_output_dir = "output/crp/yolo_person_car"
         pcx_output_dir = "output/pcx/yolo_person_car"
@@ -342,6 +429,7 @@ class Explanator:
 
         with self.record_forward_time():
             scores, boxes = self.person_vehicle_model.predict_with_boxes(test_img)
+        prediction_time_s = self._last_forward_time_ms / 1000.0
         num_boxes = boxes.shape[1]
         self.logger.debug(f"Number of boxes: {num_boxes}")
 
@@ -357,6 +445,8 @@ class Explanator:
         explanation_image_filenames = []
 
         explanation_boxes = []
+        box_backward_times = []
+        box_full_times = []
         for prediction_num in range(num_boxes):
             exp_box = {}
 
@@ -399,8 +489,44 @@ class Explanator:
                 output_dir_crp=crp_output_dir,
                 outside_logger=self.logger,
             )
+            figure_kpis = getattr(explanation_fig, "_kpi_metrics", {})
+            backward_time_s = float(figure_kpis.get("backward_time_s", 0.0))
+            full_attribution_time_s = float(figure_kpis.get("full_attribution_time_s", 0.0))
+            box_backward_times.append(backward_time_s)
+            box_full_times.append(full_attribution_time_s)
+
+            append_kpi_record(
+                yolo_box_log,
+                build_kpi_record(
+                    model="yolo",
+                    entity_type=original_entity_type,
+                    scope="box",
+                    aggregation="raw",
+                    image=original_image_filename,
+                    box_index=prediction_num,
+                    num_boxes=num_boxes,
+                    class_id=class_id,
+                    confidence=f"{confidence:.6f}",
+                    bbox=boxes_list[prediction_num],
+                    layer=layer,
+                    n_concepts=n_concepts,
+                    n_refimgs=n_refimgs,
+                    prediction_time_s=prediction_time_s,
+                    global_lcrp_time_s=backward_time_s,
+                    global_total_time_s=full_attribution_time_s,
+                ),
+            )
+            append_avg_window_record(
+                source_log_path=yolo_box_log,
+                avg_log_path=yolo_box_avg5_log,
+                model="yolo",
+                entity_type=original_entity_type,
+                scope="box",
+                layer=layer,
+            )
 
             explanation_img = fig_to_array(explanation_fig)
+            plt.close(explanation_fig)
             explanation_images.append(explanation_img)
 
             explanation_file_name = f"tfa02/{original_entity_type}/{original_filename_no_ext}/object_{prediction_num}.png"
@@ -415,6 +541,37 @@ class Explanator:
             gc.collect()
             _empty_cuda_cache()
             explanation_boxes.append(exp_box)
+
+        total_backward_time_s = sum(box_backward_times)
+        total_full_attribution_time_s = sum(box_full_times)
+        attribution_single_time_s = mean(box_full_times) if box_full_times else 0.0
+        append_kpi_record(
+            yolo_image_log,
+            build_kpi_record(
+                model="yolo",
+                entity_type=original_entity_type,
+                scope="image",
+                aggregation="raw",
+                image=original_image_filename,
+                num_boxes=num_boxes,
+                layer=layer,
+                n_concepts=n_concepts,
+                n_refimgs=n_refimgs,
+                prediction_time_s=prediction_time_s,
+                global_lcrp_time_s=total_backward_time_s,
+                global_total_time_s=total_full_attribution_time_s,
+                attribution_single_time_s=attribution_single_time_s,
+            ),
+        )
+        append_avg_window_record(
+            source_log_path=yolo_image_log,
+            avg_log_path=yolo_avg5_log,
+            model="yolo",
+            entity_type=original_entity_type,
+            scope="image",
+            layer=layer,
+        )
+        self.latest_kpi_log_paths = [yolo_box_log, yolo_box_avg5_log, yolo_image_log, yolo_avg5_log]
 
         explanation_entity = get_person_vehicle_detection_explanation_entity(
             original_image_bucket=original_image_bucket,
