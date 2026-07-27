@@ -19,12 +19,9 @@ output/
 .conda/*.h5
 *.h5
 KPIs.pdf
-output_KAHY/crp/ActMax_max_normed/module.backbone.ERBlock_2.0.rbr_1x1.conv_data.npy
-output_KAHY/crp/ActMax_max_normed/module.backbone.ERBlock_2.0.rbr_1x1.conv_rel.npy
 
-# Generated analysis and visualization outputs
 /output/
-/output_KAHY/
+/output/
 /plots/
 /output_original/
 /output_BRK/

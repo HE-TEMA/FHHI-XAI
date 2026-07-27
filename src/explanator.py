@@ -27,7 +27,7 @@ from src.entities import (
 )
 from src.minio_client import FHHI_MINIO_BUCKET
 from src.memory_logging import log_cuda_memory
-from src.letterbox_utils import letterbox_transform, rescale_boxes, check_img_size
+from src.letterbox_utils import YOLOv6TrainPreprocess, letterbox_transform, rescale_boxes
 from src.kpi_logging import (
     append_avg_window_record,
     append_kpi_record,
@@ -35,7 +35,6 @@ from src.kpi_logging import (
     build_log_path,
     timed_section,
 )
-from yolov6.data.data_augment import letterbox
 
 
 
@@ -394,11 +393,7 @@ class Explanator:
             self._person_car_dataset_orig = PersonCarDataset(
                 root_dir=person_car_data_path,
                 split="train",
-                transform=transforms.Compose([
-                    transforms.ToTensor(),
-                    transforms.Resize((640, 640)),
-                    transforms.Lambda(lambda x: x.to(torch.float32)),
-                ]),
+                transform=transforms.ToTensor(),
             )
         return self._person_car_dataset_orig
 
@@ -412,11 +407,7 @@ class Explanator:
         return model
 
     def load_person_car_data(self):
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Resize((640, 640)),
-            transforms.Lambda(lambda x: x.to(torch.float32)),
-        ])
+        transform = YOLOv6TrainPreprocess(target_size=640, stride=32, half=False)
         person_car_data_path = os.path.join(self.project_root, "data", "KAHY")
         dataset = PersonCarDataset(root_dir=person_car_data_path, split="train", transform=transform)
         return dataset
@@ -457,15 +448,14 @@ class Explanator:
 
         log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
 
-        img_size = check_img_size(640, stride=64)
-        img_letterbox = letterbox(image, new_shape=img_size, stride=64, auto=True)[0]
-        letterbox_shape = img_letterbox.shape[:2]
-
-        # Convert to tensor
-        img_letterbox_transposed = img_letterbox.transpose((2, 0, 1))
-        img_tensor = torch.from_numpy(np.ascontiguousarray(img_letterbox_transposed))
-        image_tensor = img_tensor.float()
-        image_tensor /= 255.0
+        image_tensor = letterbox_transform(
+            image,
+            target_size=640,
+            stride=32,
+            half=False,
+            auto=False,
+            scaleup=True,
+        )
 
         # Get ACTUAL letterbox shape from tensor (C, H, W) -> (H, W)
         letterbox_shape = (image_tensor.shape[1], image_tensor.shape[2])

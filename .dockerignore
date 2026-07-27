@@ -14,7 +14,7 @@ References
 plots
 KPIs.pdf
 
-output_original
+output_originaldocker pull ghcr.io/he-tema/explanation_tfa02:6.3
 output_BRK
 
 *.log

@@ -4,7 +4,6 @@ from PIL import Image
 import natsort
 
 import torch
-from torchvision import transforms as T
 
 class PersonCarDataset(Dataset):
     class_names = ("person", "car") 

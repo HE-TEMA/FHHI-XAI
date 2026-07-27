@@ -136,6 +136,7 @@ def run_analysis(
     device,
     class_id=1,
     use_canonizer=True,
+    record_layers=None,
 ):
     canonizers = [CANONIZERS[model_name]()] if use_canonizer else []
     composite = COMPOSITES[model_name](canonizers=canonizers)
@@ -149,7 +150,27 @@ def run_analysis(
     model = model.to(device)
     model.eval()
     cc = ChannelConcept()
-    layer_names = get_layer_names(model, [torch.nn.Conv2d])
+    available_layer_names = get_layer_names(model, [torch.nn.Conv2d])
+    if record_layers is None:
+        layer_names = available_layer_names
+    else:
+        layer_names = list(dict.fromkeys(record_layers))
+        missing_layers = [
+            layer for layer in layer_names
+            if layer not in available_layer_names
+        ]
+        if missing_layers:
+            raise ValueError(
+                "Requested CRP record layer(s) do not exist: "
+                f"{missing_layers}. Available convolution layers include: "
+                f"{available_layer_names[:20]}"
+            )
+        if not layer_names:
+            raise ValueError("record_layers must contain at least one layer.")
+        print(
+            "[run_analysis] restricting CRP to "
+            f"{len(layer_names)} layer(s): {layer_names}"
+        )
     if model_name == "pidnet" and use_canonizer:
         layer_names = _extend_pidnet_canonized_layer_names(layer_names)
 
