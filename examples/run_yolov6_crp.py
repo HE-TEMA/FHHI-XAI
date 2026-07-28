@@ -10,13 +10,13 @@ import argparse
 import contextlib
 import gc
 import io
+import json
 import logging
 import sys
 from pathlib import Path
 
 import torch
 from PIL import Image
-from torch.utils.data import Dataset
 from torchvision.ops import box_iou
 
 
@@ -25,46 +25,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from LCRP.models import get_model
+from src.datasets.detection_subset import DetectionSubset
 from src.datasets.person_car_dataset import PersonCarDataset
 from src.glocal_analysis import run_analysis
 from src.letterbox_utils import YOLOv6TrainPreprocess
+from src.yolo_class_mapping import resolve_display_class_names
 
 
 MODEL_NAME = "yolov6s6"
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "models" / "best_ckpt.pt"
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "data" / "BRK" / "person_vehicle_detection"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output" / "crp" / "yolo_person_car"
-
-
-class DetectionSubset(Dataset):
-    """Expose detected samples with YOLO-predicted classes as CRP targets."""
-
-    def __init__(self, dataset, indices, predicted_classes):
-        self.dataset = dataset
-        self.indices = list(indices)
-        self.predicted_classes = {
-            int(index): tuple(int(class_id) for class_id in class_ids)
-            for index, class_ids in predicted_classes.items()
-        }
-        self.class_names = dataset.class_names
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, index):
-        original_index = self.indices[index]
-        image, _ = self.dataset[original_index]
-        class_ids = torch.tensor(
-            self.predicted_classes[original_index],
-            dtype=torch.long,
-        )
-        # FeatureVisualizationLocalization reads target[..., 1]. Keep the
-        # PersonCarDataset target convention while using model predictions.
-        targets = class_ids[:, None].expand(class_ids.shape[0], 2)
-        return image, targets
-
-    def reverse_normalization(self, data):
-        return self.dataset.reverse_normalization(data)
 
 
 def select_device(requested):
@@ -103,6 +74,31 @@ def _normalized_class_name(name):
     return "vehicle" if name in {"car", "vehicle"} else name
 
 
+def detector_to_dataset_class_map(dataset, model_name=MODEL_NAME):
+    """Map detector output IDs to annotation IDs by semantic class name."""
+
+    detector_names = tuple(resolve_display_class_names(model_name, dataset))
+    dataset_names = tuple(dataset.class_names)
+    normalized_dataset_names = [
+        _normalized_class_name(name) for name in dataset_names
+    ]
+    mapping = {}
+    for detector_id, detector_name in enumerate(detector_names):
+        normalized_name = _normalized_class_name(detector_name)
+        matches = [
+            dataset_id
+            for dataset_id, dataset_name in enumerate(normalized_dataset_names)
+            if dataset_name == normalized_name
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Cannot map detector class {detector_id} ({detector_name!r}) "
+                f"uniquely into dataset classes {dataset_names!r}."
+            )
+        mapping[detector_id] = matches[0]
+    return mapping
+
+
 def validate_dataset_labels(dataset, model, limit=None):
     """Validate labels using YOLOv6-compatible rules before CRP.
 
@@ -110,15 +106,11 @@ def validate_dataset_labels(dataset, model, limit=None):
     them. Zero-area boxes are reported and excluded later from IoU matching.
     """
 
-    model_names = getattr(model.module, "names", None)
-    if model_names is not None:
-        dataset_names = [_normalized_class_name(x) for x in dataset.class_names]
-        checkpoint_names = [_normalized_class_name(x) for x in model_names]
-        if dataset_names != checkpoint_names:
-            raise ValueError(
-                "Dataset/checkpoint class order mismatch: "
-                f"dataset={dataset.class_names}, checkpoint={model_names}"
-            )
+    detector_names = tuple(resolve_display_class_names(MODEL_NAME, dataset))
+    class_mapping = detector_to_dataset_class_map(dataset, MODEL_NAME)
+    print(f"Detector class order: {detector_names}")
+    print(f"Dataset class order:  {tuple(dataset.class_names)}")
+    print(f"Detector-to-dataset class mapping: {class_mapping}")
 
     sample_count = len(dataset) if limit is None else min(limit, len(dataset))
     errors = []
@@ -259,79 +251,153 @@ def find_ground_truth_matched_samples(
     device,
     limit=None,
     iou_threshold=0.5,
+    cache_path=None,
+    checkpoint_interval=100,
 ):
-    """Keep only rank-0 predictions with matching class and sufficient IoU."""
+    """Keep rank-0 same-class predictions, with resumable scan checkpoints."""
 
     matched_indices = []
     matched_classes = {}
     diagnostics = []
+    class_mapping = detector_to_dataset_class_map(dataset, MODEL_NAME)
     sample_count = len(dataset) if limit is None else min(limit, len(dataset))
+    next_index = 0
+
+    cache_path = Path(cache_path) if cache_path is not None else None
+    expected_cache_config = {
+        "schema_version": 2,
+        "dataset_length": len(dataset),
+        "sample_count": sample_count,
+        "iou_threshold": float(iou_threshold),
+        "class_mapping": {
+            str(key): int(value) for key, value in class_mapping.items()
+        },
+    }
+
+    if cache_path is not None and cache_path.exists():
+        payload = json.loads(cache_path.read_text())
+        actual_cache_config = {
+            key: payload.get(key) for key in expected_cache_config
+        }
+        if actual_cache_config != expected_cache_config:
+            raise ValueError(
+                f"Validation cache configuration mismatch at {cache_path}. "
+                f"Expected {expected_cache_config}, found {actual_cache_config}. "
+                "Use a different cache path for this run."
+            )
+        next_index = int(payload.get("next_index", 0))
+        matched_indices = [
+            int(index) for index in payload.get("matched_indices", [])
+        ]
+        matched_classes = {
+            int(index): tuple(int(class_id) for class_id in class_ids)
+            for index, class_ids in payload.get("matched_classes", {}).items()
+        }
+        diagnostics = list(payload.get("diagnostics", []))
+        print(
+            f"Resuming validation scan at image {next_index}/{sample_count} "
+            f"from {cache_path}"
+        )
+
+    def save_scan_checkpoint():
+        if cache_path is None:
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            **expected_cache_config,
+            "next_index": next_index,
+            "completed": next_index >= sample_count,
+            "matched_indices": matched_indices,
+            "matched_classes": {
+                str(index): list(class_ids)
+                for index, class_ids in matched_classes.items()
+            },
+            "diagnostics": diagnostics,
+        }
+        temporary_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        temporary_path.write_text(json.dumps(payload))
+        temporary_path.replace(cache_path)
 
     print(
-        f"Checking {sample_count} image(s) for class-matched detections "
+        f"Checking images {next_index}..{sample_count - 1} for class-matched detections "
         f"with IoU >= {iou_threshold:.2f}..."
     )
-    with torch.inference_mode():
-        for index in range(sample_count):
-            image, _ = dataset[index]
-            with contextlib.redirect_stdout(io.StringIO()):
-                scores, boxes = model.predict_with_boxes(
-                    image.unsqueeze(0).to(device, non_blocking=True)
-                )
-
-            gt_boxes, gt_classes = _ground_truth_in_model_coordinates(
-                dataset, index
-            )
-            valid_classes = []
-            if scores.numel() and boxes.shape[1] and gt_boxes.numel():
-                scores = scores[0].detach().cpu()
-                boxes = boxes[0].detach().cpu()
-                predicted_classes = scores.argmax(dim=1)
-                confidences = scores.max(dim=1).values
-
-                for class_id in torch.unique(predicted_classes).tolist():
-                    pred_ids = torch.nonzero(
-                        predicted_classes == class_id,
-                        as_tuple=False,
-                    ).flatten()
-                    # This is precisely prediction_num=0 for the class.
-                    selected_id = pred_ids[
-                        confidences[pred_ids].argmax()
-                    ]
-                    gt_ids = torch.nonzero(
-                        gt_classes == class_id,
-                        as_tuple=False,
-                    ).flatten()
-                    if gt_ids.numel() == 0:
-                        continue
-
-                    ious = box_iou(
-                        boxes[selected_id].reshape(1, 4),
-                        gt_boxes[gt_ids],
-                    )[0]
-                    best_iou = float(ious.max())
-                    diagnostics.append(
-                        {
-                            "dataset_index": index,
-                            "class_id": int(class_id),
-                            "confidence": float(confidences[selected_id]),
-                            "iou": best_iou,
-                        }
+    try:
+        with torch.inference_mode():
+            for index in range(next_index, sample_count):
+                image, _ = dataset[index]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    scores, boxes = model.predict_with_boxes(
+                        image.unsqueeze(0).to(device, non_blocking=True)
                     )
-                    if best_iou >= iou_threshold:
-                        valid_classes.append(int(class_id))
 
-            if valid_classes:
-                matched_indices.append(index)
-                matched_classes[index] = tuple(valid_classes)
-
-            if (index + 1) % 100 == 0 or index + 1 == sample_count:
-                print(
-                    f"\rChecked {index + 1}/{sample_count}; "
-                    f"matched images: {len(matched_indices)}",
-                    end="",
-                    flush=True,
+                gt_boxes, gt_classes = _ground_truth_in_model_coordinates(
+                    dataset, index
                 )
+                valid_classes = []
+                if scores.numel() and boxes.shape[1] and gt_boxes.numel():
+                    scores = scores[0].detach().cpu()
+                    boxes = boxes[0].detach().cpu()
+                    predicted_classes = scores.argmax(dim=1)
+                    confidences = scores.max(dim=1).values
+
+                    for class_id in torch.unique(predicted_classes).tolist():
+                        dataset_class_id = class_mapping[int(class_id)]
+                        pred_ids = torch.nonzero(
+                            predicted_classes == class_id,
+                            as_tuple=False,
+                        ).flatten()
+                        # This is precisely prediction_num=0 for the class.
+                        selected_id = pred_ids[
+                            confidences[pred_ids].argmax()
+                        ]
+                        gt_ids = torch.nonzero(
+                            gt_classes == dataset_class_id,
+                            as_tuple=False,
+                        ).flatten()
+                        if gt_ids.numel() == 0:
+                            continue
+
+                        ious = box_iou(
+                            boxes[selected_id].reshape(1, 4),
+                            gt_boxes[gt_ids],
+                        )[0]
+                        best_iou = float(ious.max())
+                        diagnostics.append(
+                            {
+                                "dataset_index": index,
+                                "class_id": int(class_id),
+                                "dataset_class_id": int(dataset_class_id),
+                                "confidence": float(confidences[selected_id]),
+                                "iou": best_iou,
+                            }
+                        )
+                        if best_iou >= iou_threshold:
+                            valid_classes.append(int(class_id))
+
+                if valid_classes:
+                    matched_indices.append(index)
+                    matched_classes[index] = tuple(valid_classes)
+
+                next_index = index + 1
+                if (
+                    next_index % checkpoint_interval == 0
+                    or next_index == sample_count
+                ):
+                    save_scan_checkpoint()
+                    print(
+                        f"\rChecked {next_index}/{sample_count}; "
+                        f"matched images: {len(matched_indices)}",
+                        end="",
+                        flush=True,
+                    )
+    except KeyboardInterrupt:
+        save_scan_checkpoint()
+        print(
+            f"\nScan interrupted; progress through image {next_index - 1} "
+            f"was saved to {cache_path}."
+        )
+        raise
 
     print()
     return matched_indices, matched_classes, diagnostics

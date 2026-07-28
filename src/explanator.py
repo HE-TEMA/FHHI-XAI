@@ -1,4 +1,5 @@
 import gc
+import json
 import os
 import torch
 import torchvision.transforms as transforms
@@ -18,8 +19,10 @@ from LCRP.models import get_model
 from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.plot_pcx_explanations_YOLO import plot_pcx_explanations
 from src.plot_pcx_explanations_YOLO import plot_one_image_pcx_explanation
+from src.plot_pcx_explanations_YOLO import ExplanationUnavailableError
 from src.plotpcx_gpu import plot_pcx_explanations_pidnet
 from src.datasets.person_car_dataset import PersonCarDataset
+from src.datasets.detection_subset import DetectionSubset
 from src.datasets.flood_dataset import FloodDataset
 from src.entities import (
     get_flood_segmentation_explanation_entity,
@@ -28,6 +31,7 @@ from src.entities import (
 from src.minio_client import FHHI_MINIO_BUCKET
 from src.memory_logging import log_cuda_memory
 from src.letterbox_utils import YOLOv6TrainPreprocess, letterbox_transform, rescale_boxes
+from src.yolo_class_mapping import resolve_display_class_names
 from src.kpi_logging import (
     append_avg_window_record,
     append_kpi_record,
@@ -64,6 +68,45 @@ class Explanator:
         log_cuda_memory(self.logger, "INIT")
 
         self.project_root = project_root
+        self.person_vehicle_checkpoint = os.environ.get(
+            "PERSON_VEHICLE_CHECKPOINT",
+            os.path.join(self.project_root, "models", "best_ckpt.pt"),
+        )
+        self.person_vehicle_data_root = os.environ.get(
+            "PERSON_VEHICLE_DATA_ROOT",
+            os.path.join(
+                self.project_root,
+                "data",
+                "BRK",
+                "person_vehicle_detection",
+            ),
+        )
+        self.person_vehicle_crp_dir = os.environ.get(
+            "PERSON_VEHICLE_CRP_DIR",
+            os.path.join(
+                self.project_root,
+                "output",
+                "crp",
+                "yolov6_validated_full_one_layer_20260727_145542",
+            ),
+        )
+        self.person_vehicle_pcx_dir = os.environ.get(
+            "PERSON_VEHICLE_PCX_DIR",
+            os.path.join(
+                self.project_root,
+                "output",
+                "pcx",
+                "from_yolov6_validated_full_one_layer_20260727_145542",
+            ),
+        )
+        self.person_vehicle_ref_images_dir = os.environ.get(
+            "PERSON_VEHICLE_REF_IMAGES_DIR",
+            os.path.join(
+                self.project_root,
+                "output",
+                "ref_imgs_yolov6_brk_validated",
+            ),
+        )
         self.kpi_mirror_roots = []
         mirror_root = "/home/heydari/Jawher/FHHI-XAI"
         if os.path.abspath(self.project_root) != os.path.abspath(mirror_root):
@@ -72,6 +115,7 @@ class Explanator:
         # Lazy loading approach - don't load models until needed
         self._person_vehicle_model = None
         self._person_car_dataset = None
+        self._person_car_crp_dataset = None
         self._person_car_dataset_orig = None
         self._flood_model = None
         self._flood_dataset = None
@@ -389,35 +433,83 @@ class Explanator:
     def person_car_dataset_orig(self):
         """Dataset without transform for accessing original high-res images."""
         if not hasattr(self, '_person_car_dataset_orig') or self._person_car_dataset_orig is None:
-            person_car_data_path = os.path.join(self.project_root, "data", "KAHY")
             self._person_car_dataset_orig = PersonCarDataset(
-                root_dir=person_car_data_path,
+                root_dir=self.person_vehicle_data_root,
                 split="train",
                 transform=transforms.ToTensor(),
             )
         return self._person_car_dataset_orig
 
+    @property
+    def person_car_crp_dataset(self):
+        """Exact manifest-backed dataset used to compute the PCX artifacts."""
+        if self._person_car_crp_dataset is None:
+            manifest_path = os.path.join(
+                self.person_vehicle_crp_dir,
+                "crp_filter_manifest.json",
+            )
+            if not os.path.isfile(manifest_path):
+                raise FileNotFoundError(
+                    f"Missing CRP selection manifest: {manifest_path}"
+                )
+            with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+                manifest = json.load(manifest_file)
+
+            if int(manifest["dataset_length"]) != len(self.person_car_dataset):
+                raise ValueError(
+                    f"CRP manifest dataset length {manifest['dataset_length']} "
+                    f"does not match runtime dataset length {len(self.person_car_dataset)}."
+                )
+            manifest_checkpoint = os.path.basename(manifest.get("checkpoint", ""))
+            runtime_checkpoint = os.path.basename(self.person_vehicle_checkpoint)
+            if manifest_checkpoint != runtime_checkpoint:
+                raise ValueError(
+                    f"CRP checkpoint {manifest_checkpoint!r} does not match "
+                    f"runtime checkpoint {runtime_checkpoint!r}."
+                )
+
+            indices = [int(index) for index in manifest["matched_indices"]]
+            predicted_classes = {
+                int(index): tuple(int(class_id) for class_id in class_ids)
+                for index, class_ids in manifest["matched_classes"].items()
+            }
+            self._person_car_crp_dataset = DetectionSubset(
+                dataset=self.person_car_dataset,
+                indices=indices,
+                predicted_classes=predicted_classes,
+            )
+            if len(self._person_car_crp_dataset) != int(
+                manifest["crp_dataset_length"]
+            ):
+                raise ValueError("Runtime CRP subset length differs from the manifest.")
+        return self._person_car_crp_dataset
+
     def load_person_vehicle_model(self):
         # Load the person/vehicle detection model
         model_name = "yolov6s6"
-        person_vehicle_model_path = os.path.join(self.project_root, "models", "best_ckpt_KAHY.pt")
-        model = get_model(model_name=model_name, classes=2, ckpt_path=person_vehicle_model_path, device=self.device,
+        model = get_model(model_name=model_name, classes=2, ckpt_path=self.person_vehicle_checkpoint, device=self.device,
                           dtype=self.dtype)
         model.eval()
         return model
 
     def load_person_car_data(self):
         transform = YOLOv6TrainPreprocess(target_size=640, stride=32, half=False)
-        person_car_data_path = os.path.join(self.project_root, "data", "KAHY")
-        dataset = PersonCarDataset(root_dir=person_car_data_path, split="train", transform=transform)
+        dataset = PersonCarDataset(
+            root_dir=self.person_vehicle_data_root,
+            split="train",
+            transform=transform,
+        )
         return dataset
 
     def _find_person_car_sample_id(self, original_image_filename: str):
         basename = os.path.basename(original_image_filename)
         target_stem = os.path.splitext(basename)[0].lower()
-        for idx, image_file in enumerate(self.person_car_dataset.image_files):
+        for crp_index, original_index in enumerate(
+            self.person_car_crp_dataset.indices
+        ):
+            image_file = self.person_car_dataset.image_files[original_index]
             if os.path.splitext(image_file)[0].lower() == target_stem:
-                return idx
+                return crp_index
         return None
 
     def explain_person_vehicle_detection(self, original_image_bucket: str, original_image_filename: str,
@@ -425,7 +517,16 @@ class Explanator:
         """Generate person/vehicle detection explanation."""
         original_entity_type = "PersonVehicleDetection"
         original_filename_no_ext = os.path.splitext(original_image_filename)[0]
-        min_explanation_confidence = 0.5
+        min_explanation_confidence = float(
+            os.environ.get(
+                "PERSON_VEHICLE_MIN_EXPLANATION_CONFIDENCE",
+                "0.30",
+            )
+        )
+        if not 0.0 <= min_explanation_confidence <= 1.0:
+            raise ValueError(
+                "PERSON_VEHICLE_MIN_EXPLANATION_CONFIDENCE must be between 0 and 1."
+            )
 
         log_cuda_memory(self.logger, "PERSON_VEHICLE START")
 
@@ -435,12 +536,21 @@ class Explanator:
         layer = 'module.backbone.ERBlock_3.0.rbr_dense.conv'
         # More car components expose distinct appearance/context modes such as
         # white, dark, isolated, small and occluded vehicles.
-        prototype_dict = {0: 6, 1: 5}
+        prototype_dict = {0: 4, 1: 5}
 
         mode = "relevance"
-        crp_output_dir = os.path.join(self.project_root, "output_KAHY", "crp")
-        pcx_output_dir = os.path.join(self.project_root, "output_KAHY", "pcx")
-        ref_imgs_path = os.path.join(self.project_root, "output", "ref_imgs_12")
+        crp_output_dir = self.person_vehicle_crp_dir
+        pcx_output_dir = self.person_vehicle_pcx_dir
+        ref_imgs_path = self.person_vehicle_ref_images_dir
+        display_class_names = resolve_display_class_names(
+            model_name,
+            self.person_car_dataset,
+        )
+        if tuple(display_class_names) != ("person", "car"):
+            raise ValueError(
+                "The YOLO explanator requires detector classes "
+                "0=person and 1=car to match the validated CRP/PCX artifacts."
+            )
         sample_id = self._find_person_car_sample_id(original_image_filename)
 
         # Get original image shape (H, W)
@@ -506,14 +616,28 @@ class Explanator:
 
         box_backward_times = []
         box_full_times = []
-        class_occurrence_counters = {}
-        for prediction_num, _ in enumerate(valid_detection_indices.tolist()):
+        for prediction_num, original_detection_index in enumerate(
+            valid_detection_indices.tolist()
+        ):
             class_id = class_ids[prediction_num].item()
+            predicted_class_name = display_class_names[class_id]
             confidence = confidences[prediction_num].item()
-            class_local_prediction_num = class_occurrence_counters.get(class_id, 0)
-            class_occurrence_counters[class_id] = class_local_prediction_num + 1
+            # Preserve the class-local rank in the detector's unfiltered
+            # output. Filtering a lower-confidence object must never shift the
+            # attribution onto another box of the same class.
+            class_local_prediction_num = int(
+                (class_ids_all[:original_detection_index + 1] == class_id)
+                .sum()
+                .item()
+                - 1
+            )
 
             self.logger.debug(f"Generating explanation for box {prediction_num} of {num_boxes}")
+            self.logger.debug(
+                "Prediction/prototype class locked to %s (%s)",
+                class_id,
+                predicted_class_name,
+            )
             log_cuda_memory(self.logger, f"BEFORE BOX {prediction_num}")
 
             # Clear cache before each box processing
@@ -527,41 +651,55 @@ class Explanator:
             # )
 
             # PCX visualization
-            if sample_id is not None:
-                explanation_fig = plot_pcx_explanations(
-                    class_id=class_id,
-                    model_name=model_name,
-                    model=self.person_vehicle_model,
-                    dataset=self.person_car_dataset,
-                    sample_id=sample_id,
-                    n_concepts=n_concepts,
-                    n_refimgs=n_refimgs,
-                    num_prototypes=prototype_dict,
-                    prediction_num=class_local_prediction_num,
-                    layer_name=layer,
-                    ref_imgs_path=ref_imgs_path,
-                    output_dir_pcx=pcx_output_dir,
-                    output_dir_crp=crp_output_dir,
+            try:
+                if sample_id is not None:
+                    explanation_fig = plot_pcx_explanations(
+                        class_id=class_id,
+                        model_name=model_name,
+                        model=self.person_vehicle_model,
+                        dataset=self.person_car_crp_dataset,
+                        sample_id=sample_id,
+                        n_concepts=n_concepts,
+                        n_refimgs=n_refimgs,
+                        num_prototypes=prototype_dict,
+                        prediction_num=class_local_prediction_num,
+                        layer_name=layer,
+                        ref_imgs_path=ref_imgs_path,
+                        output_dir_pcx=pcx_output_dir,
+                        output_dir_crp=crp_output_dir,
+                        display_class_names=display_class_names,
+                    )
+                else:
+                    explanation_fig = plot_one_image_pcx_explanation(
+                        model_name=model_name,
+                        model=self.person_vehicle_model,
+                        img=image_tensor,
+                        orig_img=image,
+                        dataset=self.person_car_crp_dataset,
+                        orig_dataset=self.person_car_dataset_orig,
+                        class_id=class_id,
+                        n_concepts=n_concepts,
+                        n_refimgs=n_refimgs,
+                        num_prototypes=prototype_dict,
+                        prediction_num=class_local_prediction_num,
+                        layer_name=layer,
+                        ref_imgs_path=ref_imgs_path,
+                        output_dir_pcx=pcx_output_dir,
+                        output_dir_crp=crp_output_dir,
+                        outside_logger=self.logger,
+                        display_class_names=display_class_names,
+                    )
+            except ExplanationUnavailableError as exc:
+                self.logger.info(
+                    "Skipping explanation for detection %s (%s, confidence %.3f): %s",
+                    prediction_num,
+                    predicted_class_name,
+                    confidence,
+                    exc,
                 )
-            else:
-                explanation_fig = plot_one_image_pcx_explanation(
-                    model_name=model_name,
-                    model=self.person_vehicle_model,
-                    img=image_tensor,
-                    orig_img=image,
-                    dataset=self.person_car_dataset,
-                    orig_dataset=self.person_car_dataset_orig,
-                    class_id=class_id,
-                    n_concepts=n_concepts,
-                    n_refimgs=n_refimgs,
-                    num_prototypes=prototype_dict,
-                    prediction_num=class_local_prediction_num,
-                    layer_name=layer,
-                    ref_imgs_path=ref_imgs_path,
-                    output_dir_pcx=pcx_output_dir,
-                    output_dir_crp=crp_output_dir,
-                    outside_logger=self.logger,
-                )
+                gc.collect()
+                _empty_cuda_cache()
+                continue
             figure_kpis = getattr(explanation_fig, "_kpi_metrics", {})
             backward_time_s = float(figure_kpis.get("backward_time_s", 0.0))
             full_attribution_time_s = float(figure_kpis.get("full_attribution_time_s", 0.0))
@@ -681,9 +819,13 @@ if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Set your project root directory.
-# Adjust this path to where your 'models', 'data', 'LCRP', and 'src' directories are located.
-project_root = os.path.abspath(os.path.join(os.getcwd(), '..'))
+# Resolve to the repository/application root both locally and in Docker.
+# PROJECT_ROOT can override this when code and runtime assets are mounted at
+# different locations.
+project_root = os.environ.get(
+    "PROJECT_ROOT",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)),
+)
 logger.info(f"Project Root set to: {project_root}")
 
 # THIS IS WHERE THE 'explanator' OBJECT IS CREATED

@@ -40,6 +40,10 @@ from src.yolo_class_mapping import (
 )
 
 
+class ExplanationUnavailableError(RuntimeError):
+    """Raised when a requested detection has no usable explanation heatmap."""
+
+
 def _heatmap_is_low_signal(heatmap_tensor, abs_threshold=1e-6):
     if heatmap_tensor is None:
         return True
@@ -49,9 +53,28 @@ def _heatmap_is_low_signal(heatmap_tensor, abs_threshold=1e-6):
     abs_max = float(t.abs().max().item())
     if abs_max <= abs_threshold:
         return True
-    pos_sum = float(t.clamp(min=0).sum().item())
-    neg_sum = float((-t.clamp(max=0)).sum().item())
-    return pos_sum <= neg_sum
+    # A negative-dominant signed relevance map is still informative and must
+    # not be replaced by a "low signal" warning. Only genuinely near-zero or
+    # non-finite maps are unusable.
+    return not bool(torch.isfinite(t).all())
+
+
+def _crop_uniform_letterbox_padding(image, pad_value=114, tolerance=2):
+    """Remove only uniform YOLO letterbox borders from a PIL image."""
+    array = np.asarray(image)
+    if array.ndim != 3:
+        return image
+
+    difference = np.abs(array.astype(np.int16) - int(pad_value))
+    content = np.any(difference > int(tolerance), axis=2)
+    rows = np.flatnonzero(content.any(axis=1))
+    columns = np.flatnonzero(content.any(axis=0))
+    if rows.size == 0 or columns.size == 0:
+        return image
+
+    left, right = int(columns[0]), int(columns[-1]) + 1
+    top, bottom = int(rows[0]), int(rows[-1]) + 1
+    return image.crop((left, top, right, bottom))
 
 
 def _show_low_signal_box(ax, message="relevance too small\nor object too small"):
@@ -72,7 +95,7 @@ def _show_low_signal_box(ax, message="relevance too small\nor object too small")
 
 def plot_pcx_explanations(
     class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
-        ref_imgs_path, output_dir_pcx, output_dir_crp):
+        ref_imgs_path, output_dir_pcx, output_dir_crp, display_class_names=None):
 
     # Load the input image and label
     img, t = dataset[sample_id]
@@ -94,6 +117,7 @@ def plot_pcx_explanations(
         ref_imgs_path=ref_imgs_path,
         output_dir_pcx=output_dir_pcx,
         output_dir_crp=output_dir_crp,
+        display_class_names=display_class_names,
     )
 
     # Display and save the plot
@@ -117,7 +141,8 @@ def plot_pcx_explanations(
 
 def plot_one_image_pcx_explanation(
         model_name, model, img, orig_img, dataset, orig_dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
-        ref_imgs_path, output_dir_pcx, output_dir_crp, outside_logger=None
+        ref_imgs_path, output_dir_pcx, output_dir_crp, outside_logger=None,
+        display_class_names=None,
 ):
     import logging
     logger = outside_logger if outside_logger is not None else logging.getLogger(__name__)
@@ -202,6 +227,17 @@ def plot_one_image_pcx_explanation(
         joblib.dump(gmm, cache_path)
         joblib.dump(prototype_gmms, prototype_cache_path)
 
+    if int(gmm.n_components) != int(num_prototypes):
+        raise ValueError(
+            f"Class-{class_id} GMM has K={gmm.n_components}, but K={num_prototypes} "
+            "was requested. Delete the stale cache or use the matching prototype count."
+        )
+    if int(gmm.n_features_in_) != int(attributions.shape[1]):
+        raise ValueError(
+            f"Class-{class_id} GMM expects {gmm.n_features_in_} features, but the "
+            f"class-{class_id} attribution bank contains {attributions.shape[1]}."
+        )
+
     for p, g_ in enumerate(prototype_gmms):
         g_._set_parameters([
             param[p:p + 1] if j > 0 else param[p:p + 1] * 0 + 1
@@ -221,6 +257,11 @@ def plot_one_image_pcx_explanation(
             composite,
             record_layer=[layer_name],
             init_rel=1)
+    if _heatmap_is_low_signal(attr.heatmap):
+        raise ExplanationUnavailableError(
+            f"Input main heatmap is unavailable for class_id={class_id}, "
+            f"prediction_num={prediction_num}."
+        )
 
     # Channel (neuron) relevance on the given layer for this image
     channel_rels = cc.attribute(attr.relevances[layer_name], abs_norm=True)
@@ -246,8 +287,22 @@ def plot_one_image_pcx_explanation(
     y = diff @ L.T
     m2 = np.sum(y * y, axis=1)  # Mahalanobis^2
 
-    closest_row = int(np.argmin(m2))
+    # A representative must belong to the chosen component as well as the
+    # requested detector class. This prevents a nearby row assigned to another
+    # prototype from being displayed as the selected prototype.
+    component_assignments = gmm.predict(A)
+    component_rows = np.flatnonzero(component_assignments == chosen_proto)
+    if component_rows.size == 0:
+        raise ValueError(
+            f"Class-{class_id} prototype {chosen_proto} has no assigned attribution rows."
+        )
+    closest_row = int(component_rows[np.argmin(m2[component_rows])])
     prototype_meta = meta[closest_row]
+    if int(prototype_meta["cls"]) != int(class_id):
+        raise ValueError(
+            f"Refusing cross-class prototype: prediction class_id={class_id}, "
+            f"prototype metadata class_id={prototype_meta['cls']}."
+        )
     ds_idx = int(prototype_meta["dataset_idx"])
     if "box" not in prototype_meta:
         raise ValueError(
@@ -352,6 +407,11 @@ def plot_one_image_pcx_explanation(
 
         logger.debug("Saved prototype heatmaps to cache")
 
+    if _heatmap_is_low_signal(attr_p_heatmap):
+        raise ExplanationUnavailableError(
+            f"Prototype main heatmap is unavailable for class_id={class_id}, "
+            f"prototype={chosen_proto}, metadata_row={closest_row}."
+        )
 
     input_scores, batch_predicted_boxes = model.predict_with_boxes(data)
     sample_scores = input_scores[0]
@@ -361,14 +421,23 @@ def plot_one_image_pcx_explanation(
     pred_confidence = sample_scores[selected_index, class_id].item()
     predicted_boxes = sample_predicted_boxes[selected_index]
 
-    display_class_names = _resolve_display_class_names(model_name, dataset)
+    canonical_class_names = tuple(
+        _resolve_display_class_names(model_name, dataset)
+    )
+    if display_class_names is None:
+        display_class_names = canonical_class_names
+    elif tuple(display_class_names) != canonical_class_names:
+        raise ValueError(
+            f"Display mapping {tuple(display_class_names)!r} does not match the "
+            f"validated detector/CRP/PCX mapping {canonical_class_names!r}."
+        )
     pred_label = _class_name(display_class_names, class_id)
     boxes = predicted_boxes.clone().detach().float()[None]
     colors = ["#ffcc00" for _ in boxes]
     result = draw_bounding_boxes((dataset.reverse_normalization(data[0])).type(torch.uint8),
                                  boxes, colors=colors, width=8)
 
-    img_ = F.to_pil_image(result)
+    img_ = _crop_uniform_letterbox_padding(F.to_pil_image(result))
 
     # Get bounding box coordinates.
     box_coords = predicted_boxes.clone().detach().cpu().numpy()
@@ -421,7 +490,7 @@ def plot_one_image_pcx_explanation(
     result = draw_bounding_boxes((dataset.reverse_normalization(data_p[0])).type(torch.uint8),
                                  boxes, colors=colors, width=8)
 
-    img_prototype = F.to_pil_image(result)
+    img_prototype = _crop_uniform_letterbox_padding(F.to_pil_image(result))
 
     # Get bounding box coordinates.
     box_coords = predicted_boxes_p.clone().detach().cpu().numpy()
@@ -509,7 +578,7 @@ def plot_one_image_pcx_explanation(
                         0.02, 0.98,                       #
                         label_str,
                         transform=ax.transAxes,
-                        fontsize= 7,
+                        fontsize=10,
                         fontweight="bold",
                         color="yellow",
                         va="top", ha="left",
@@ -600,12 +669,12 @@ def plot_one_image_pcx_explanation(
                     img_prototype = img_prototype.resize((150, 150), Image.BILINEAR)
                     ax.imshow(img_prototype)
                 elif r == 1:
-                    if _heatmap_is_low_signal(attr_p_heatmap):
-                        _show_low_signal_box(ax)
-                    else:
-                        img = imgify(attr_p_heatmap, cmap="bwr", symmetric=True, level=5)
-                        img = img.resize((150, 150), Image.BILINEAR)
-                        ax.imshow(img)
+                    # Render signed prototype relevance even when it is
+                    # negative-dominant. The previous low-signal test could
+                    # incorrectly replace a valid heatmap with a warning box.
+                    img = imgify(attr_p_heatmap, cmap="bwr", symmetric=True, level=5)
+                    img = img.resize((150, 150), Image.BILINEAR)
+                    ax.imshow(img)
                 elif r == 2:
                     ax.set_title("detection")
                     ax.imshow(detection_crop_p)

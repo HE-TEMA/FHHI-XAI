@@ -1,8 +1,10 @@
 """Class identity invariants shared by YOLO explanation code."""
 
 MODEL_CLASS_NAME_OVERRIDES = {
-    # The deployed KAHY checkpoint emits detector outputs in this order.
-    "yolov6s6": ("car", "person"),
+    # The validated two-class BRK checkpoint and its CRP/PCX artifacts use
+    # this detector-output order. Keep detector IDs separate from any external
+    # ontology IDs used by downstream entities.
+    "yolov6s6": ("person", "car"),
 }
 
 
