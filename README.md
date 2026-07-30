@@ -129,25 +129,6 @@ The task-management endpoints change queue state and should be protected appropr
 
 Several research and legacy implementations remain for reproducibility. The deployed behavior is determined by the imports in `src/explanator.py`; changing an unused experimental module does not change the service.
 
-## Requirements
-
-The pinned environment uses Python 3.8.
-
-```bash
-conda create -n tema python=3.8
-conda activate tema
-pip install -r requirements.txt
-```
-
-For notebook-based trial preparation:
-
-```bash
-pip install jupyter scikit-learn
-jupyter lab
-```
-
-Run commands from the repository root so the `src` and `LCRP` packages resolve correctly.
-
 ## Configuration
 
 The container defines these general defaults:
@@ -166,180 +147,124 @@ Model paths, dataset roots, CRP directories, PCX directories, reference-image di
 
 MinIO connection values are currently defined in `src/minio_client.py`. Production credentials should be provided through environment variables or a secret manager, not committed to source control. Rotate any credential that has been exposed in repository history.
 
-## Run locally
+## Build the Docker image
 
-Start the application components in separate terminals.
-
-Start Redis:
-
-```bash
-redis-server
-```
-
-Start Flask:
-
-```bash
-DEBUG=1 python app.py
-```
-
-Start the worker:
-
-```bash
-python worker.py
-```
-
-On macOS, the worker may also require:
-
-```bash
-export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-```
-
-The default service URL is `http://localhost:8080/tfa02`.
-
-Check the service:
-
-```bash
-curl -f http://localhost:8080/tfa02/ping
-curl -s http://localhost:8080/tfa02/tasks
-```
-
-## Test
-
-### Unit tests
-
-Run the complete local test suite:
-
-```bash
-pytest -q
-```
-
-Tests that require unavailable model weights, explanation data, GPUs, or external services must be run in the corresponding configured environment.
-
-### Local service integration test
-
-With Redis, Flask, and the worker running:
-
-```bash
-python tests/test_post_data.py ImageMetadata
-```
-
-Then inspect task state:
-
-```bash
-curl -s http://localhost:8080/tfa02/tasks
-```
-
-The files under `tests/` also include helpers for subscriptions and external entities. Review their target URLs and identifiers before running them because some utilities can contact shared TEMA infrastructure.
-
-### Cloud integration test
-
-Only run this against an authorized deployed environment:
-
-```bash
-python tests/test_post_data.py ImageMetadata --cloud
-```
-
-Monitor the service and worker logs, confirm that the queued task completes, verify uploaded explanation files, and inspect the resulting entity update. A successful `/ping` response alone does not validate the complete pipeline.
-
-## Build the container
-
-For local development:
-
-```bash
-docker build -t explanation_tfa02 .
-```
-
-For the TEMA amd64 environment:
+To build for the TEMA cloud:
 
 ```bash
 docker build --platform linux/amd64 -t explanation_tfa02 .
 ```
 
-Run with the provided GPU command:
+For development on a Mac, build like this:
+
+```bash
+docker build -t explanation_tfa02 .
+```
+
+## Push the image to the registry
+
+Obtain a Personal Access Token (PAT) by following [these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+
+It is likely that you already have a PAT stored in your Git credential helper. To see it, run:
+
+```bash
+echo "url=https://github.com" | git credential fill
+```
+
+Set the PAT environment variable to your PAT value:
+
+```bash
+export PAT=<your_git_personal_access_token>
+```
+
+Test the GHCR login:
+
+```bash
+echo $PAT | docker login ghcr.io -u <your_git_username> --password-stdin
+```
+
+Push the TFA-02 container image to the Container Registry:
+
+```bash
+docker tag explanation_tfa02 ghcr.io/he-tema/explanation_tfa02:1.0
+docker push ghcr.io/he-tema/explanation_tfa02:1.0
+```
+
+Write to Nicola Colosi on TEMA Slack to deploy the pushed container on the TEMA cluster.
+
+## Run the Docker container
+
+Edit the file if you want to change some environment variables:
 
 ```bash
 ./run_docker.sh
 ```
 
-Or run explicitly:
+## Development
+
+### Install dependencies
 
 ```bash
-docker run --rm \
-  --name explanation_tfa02 \
-  --gpus all \
-  -p 8080:8080 \
-  explanation_tfa02
+conda create -n tema python=3.8
+conda activate tema
+pip install -r requirements.txt
 ```
 
-Verify startup and GPU access:
+During development, you can run the application components separately in different terminal tabs for easier debugging and log monitoring.
+
+Start the Redis server:
 
 ```bash
-curl -f http://localhost:8080/tfa02/ping
-docker exec explanation_tfa02 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"
+redis-server
 ```
 
-### Post-build container tests
-
-After the container is running and `/tfa02/ping` succeeds, run the local integration test from the repository root:
+Start the Flask application:
 
 ```bash
-python tests/test_post_data.py ImageMetadata
+DEBUG=1 python app.py
 ```
 
-Confirm that the request is accepted, the worker processes the queued task, and the task reaches a completed state:
+`DEBUG=1` will make the application reload on code changes. Remove it if you do not want automatic reloading.
+
+Start the worker process:
 
 ```bash
-curl -s http://localhost:8080/tfa02/tasks
-docker logs explanation_tfa02 2>&1 | tail -n 200
+python worker.py
 ```
 
-After the image has been deployed to an authorized TEMA cluster environment, run the cloud integration test:
+For the worker to work properly on a Mac, run this before starting it:
 
 ```bash
-python tests/test_post_data.py ImageMetadata --cloud
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 ```
 
-The cloud test contacts shared infrastructure. Verify its configured URL and identifiers before running it, then confirm the uploaded explanation output and external entity update.
+The application will be available at `http://localhost:8080/tfa02` by default.
 
-The code contains CPU paths and selected memory fallbacks, but production explanation generation is computationally expensive. A compatible CUDA environment is recommended.
+For production deployment, use the Docker container as described in the [Run the Docker container](#run-the-docker-container) section above.
 
-## Publish and deploy to the TEMA cluster
+## Testing
 
-Use an immutable version tag for each deployment.
-
-Authenticate to the GitHub Container Registry:
+You can test the application using the provided test script in the `tests/` folder:
 
 ```bash
-export GHCR_TOKEN=<personal-access-token>
-echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+cd tests
 ```
 
-Tag and push:
+There are two ways to run the tests.
+
+Local testing sends notifications to local Redis:
 
 ```bash
-export IMAGE_VERSION=<version>
-docker tag explanation_tfa02 ghcr.io/he-tema/explanation_tfa02:"$IMAGE_VERSION"
-docker push ghcr.io/he-tema/explanation_tfa02:"$IMAGE_VERSION"
+python test_post_data.py ImageMetadata
 ```
 
-Provide the TEMA cluster operator with:
+Cloud testing sends notifications to the TEMA cloud:
 
-- the immutable image tag;
-- required environment variables and secrets;
-- mounted model and explanation-data paths, if these are not packaged in the image;
-- GPU/runtime requirements;
-- the expected base path and port;
-- the selected trial branch and commit used to build the deployment;
-- a representative request for post-deployment verification.
+```bash
+python test_post_data.py ImageMetadata --cloud
+```
 
-After deployment:
-
-1. call `/tfa02/ping`;
-2. run `python tests/test_post_data.py ImageMetadata --cloud`;
-3. confirm that the task moves from queued to completed;
-4. inspect Flask and worker logs;
-5. verify the uploaded explanation output;
-6. verify the external entity update.
+The test script sends sample image metadata to the application. You should see the processing results in the logs of both the Flask application and the worker process.
 
 ## Logs and operations
 
