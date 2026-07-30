@@ -135,28 +135,26 @@ The test script will send sample image metadata to the application and you shoul
 
 ### References
 
+**LRP — Layer-wise Relevance Propagation**
 
-LRP (Layer-wise Relevance Propagation):
+- Bach et al., [*On Pixel-Wise Explanations for Non-Linear Classifier Decisions by Layer-Wise Relevance Propagation*](https://doi.org/10.1371/journal.pone.0130140)
+- Montavon et al., [*Layer-Wise Relevance Propagation: An Overview*](https://doi.org/10.1007/978-3-030-28954-6_10)
+- [Zennit toolbox](https://github.com/chr5tphr/zennit)
 
-- original paper: (https://doi.org/10.1371/journal.pone.0130140)
-- overview paper: (https://doi.org/10.1007/978-3-030-28954-6_10)
-- zennit toolbox: (https://github.com/chr5tphr/zennit)
-  
-CRP (Concept Relevance Propagation):
+**CRP — Concept Relevance Propagation**
 
-- paper: (https://doi.org/10.1038/s42256-023-00711-8)
-- zennit-crp toolbox: (https://github.com/rachtibat/zennit-crp)
+- Achtibat et al., [*From Attribution Maps to Human-Understandable Explanations through Concept Relevance Propagation*](https://doi.org/10.1038/s42256-023-00711-8)
+- [Zennit-CRP toolbox](https://github.com/rachtibat/zennit-crp)
 
-  
-L-CRP (Concept Relevance Propagation for Localization Models):
+**L-CRP — Concept Relevance Propagation for Localization Models**
 
-- paper: (https://arxiv.org/pdf/2211.11426)
-- L-CRP code: (https://github.com/maxdreyer/L-CRP/tree/main)
+- Dreyer et al., [*Revealing Hidden Context Bias in Segmentation and Object Detection through Concept-specific Explanations*](https://arxiv.org/pdf/2211.11426)
+- [L-CRP code](https://github.com/maxdreyer/L-CRP/tree/main)
 
-  
-PCX (Prototypical Concept-based Explanations):
-- paper: (https://arxiv.org/pdf/2311.16681)
-- PCX code: (https://github.com/maxdreyer/pcx/tree/main)
+**PCX — Prototypical Concept-based Explanations**
+
+- Dreyer et al., [*Understanding the (Extra-)Ordinary: Validating Deep Model Decisions with Prototypical Concept-based Explanations*](https://arxiv.org/pdf/2311.16681)
+- [PCX code](https://github.com/maxdreyer/pcx/tree/main)
 
 ---
 
@@ -166,11 +164,14 @@ This section extends the original project notes above. It describes the workflow
 
 ## What this repository does
 
-The repository combines three related explanation steps:
+The repository combines four related explanation ideas:
 
-1. **L-CRP/CRP (Concept Relevance Propagation)** propagates a model prediction backward and measures which channels (concepts) in an intermediate layer are relevant. The repository calls the dataset-wide preprocessing step a **glocal analysis**.
-2. **PCX (Prototypical Concept-based Explanations)** collects the per-image concept-relevance vectors, clusters them with Gaussian mixture models (GMMs), and treats the cluster centers as prototypes.
-3. **The TFA-02 service** receives an Orion/NGSI entity, obtains the corresponding image from MinIO, queues the work through Redis/RQ, runs the detector or segmenter plus PCX, stores explanation images, and updates the external entity.
+1. **LRP (Layer-wise Relevance Propagation)** explains a selected model output by redistributing its prediction score backward, layer by layer, toward the input. The redistribution follows the contributions made by lower-layer neurons and is designed around relevance conservation. At input level, the resulting relevance scores show how individual pixels contributed to the selected prediction.
+2. **CRP (Concept Relevance Propagation)** extends LRP by conditioning the backward relevance flow on selected hidden-layer units. In convolutional networks, this project interprets individual channels as latent concepts. CRP therefore identifies which concepts contributed to a prediction, assigns concept relevance scores, and produces concept-conditional heatmaps showing where those concepts occur. Relevance Maximization (RelMax) complements this by retrieving dataset examples for which a concept was strongly relevant to a prediction, rather than merely highly activated.
+3. **L-CRP (CRP for Localization Models)** adapts this local-and-global, or **glocal**, concept analysis to object detection and semantic segmentation. For an object detector, relevance is initialized from the class score of a selected bounding box, allowing a separate explanation for each detected object. For segmentation, relevance can be initialized from the selected class region or another region of interest. The explanation communicates which latent concepts contributed, how strongly they contributed, and where they are localized in the input.
+4. **PCX (Prototypical Concept-based Explanations)** represents each decision by its concept-relevance vector and models recurring class-wise decision strategies with prototypes. In this repository, Gaussian mixture models group similar relevance vectors and their component means represent prototypical concept-use strategies. A local prediction can then be compared with its nearest prototype. This helps reveal which learned decision strategy was used and whether a prediction deviates from normal prototypical behavior, which can indicate an outlier, a spurious strategy, or a data-quality issue.
+
+The **TFA-02 service** applies these methods operationally: it receives an Orion/NGSI entity, obtains the corresponding image from MinIO, queues the work through Redis/RQ, runs the detector or segmenter and its PCX explanation, stores the explanation images, and updates the external entity.
 
 CRP and PCX are not independent:
 
@@ -181,7 +182,7 @@ images + labels + checkpoint + preprocessing
        validate and select usable predictions
                     |
                     v
-        CRP glocal artifacts + selection manifest
+       CRP relevance statistics + selection manifest
                     |
                     v
        class-specific attribution banks + metadata
@@ -193,7 +194,7 @@ images + labels + checkpoint + preprocessing
       explanation plot for a new model prediction
 ```
 
-The checkpoint, class order, dataset order, preprocessing, selected layer, CRP directory, PCX directory, and reference-image directory form one versioned artifact set. Do not mix files generated by different versions of any of these inputs.
+The checkpoint, class order, dataset order, preprocessing, selected layer, CRP relevance-statistics directory, PCX attribution-bank directory, and reference-image directory form one versioned set of explanation data. Do not mix results generated by different versions of any of these inputs.
 
 ## Which files should I start with?
 
@@ -201,10 +202,10 @@ For the current production YOLOv6 workflow, use these files in order:
 
 1. [`examples/yolo_BRK_preprocecing_check.ipynb`](examples/yolo_BRK_preprocecing_check.ipynb) to inspect image/label preprocessing and box geometry.
 2. [`examples/run_yolov6_crp.py`](examples/run_yolov6_crp.py) for a command-line CRP smoke test.
-3. [`examples/yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) to create the validated, manifest-backed, one-layer production CRP artifacts.
+3. [`examples/yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) to calculate the validated, manifest-backed, one-layer production CRP relevance statistics.
 4. [`examples/yolo_brk_pcx.ipynb`](examples/yolo_brk_pcx.ipynb) to create class-specific PCX banks, metadata, GMMs, reference images, and plots.
 5. [`examples/car_prototype_audit.ipynb`](examples/car_prototype_audit.ipynb) to audit whether the learned car prototypes are meaningful.
-6. [`src/explanator.py`](src/explanator.py) to configure the artifact set used by the service.
+6. [`src/explanator.py`](src/explanator.py) to deploy the code and pcx setting set used by the service.
 
 [`examples/yolo_concept_prototype.ipynb`](examples/yolo_concept_prototype.ipynb) is the renamed general YOLO PCX/concept-prototype notebook. It is useful for exploration, but the two validated BRK notebooks above are the authoritative production workflow.
 
@@ -212,7 +213,7 @@ For the current flood/PIDNet workflow, start with [`examples/pidnet.ipynb`](exam
 
 ## Complete `examples/` catalog
 
-The `examples/` directory contains research notebooks, production-preparation notebooks, command-line helpers, and generated artifacts. Not every notebook is required for deployment.
+The `examples/` directory contains research notebooks, production-preparation notebooks, command-line helpers, and generated explanation results. Not every notebook is required for deployment.
 
 ### YOLOv6 notebooks and scripts
 
@@ -220,7 +221,7 @@ The `examples/` directory contains research notebooks, production-preparation no
 |---|---|---|
 | [`yolo_BRK_preprocecing_check.ipynb`](examples/yolo_BRK_preprocecing_check.ipynb) | BRK image/label preprocessing checks, including the detector input and annotation geometry | Run before expensive CRP when data, resize, padding, or labels have changed |
 | [`run_yolov6_crp.py`](examples/run_yolov6_crp.py) | Validates YOLO labels, maps dataset classes to detector classes, reproduces 640-pixel YOLOv6 letterboxing, filters predictions by same-class IoU, constructs `DetectionSubset`, and runs CRP | Recommended CLI smoke test and reusable CRP entry point |
-| [`yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) | Full validated BRK CRP workflow, selection diagnostics, one-layer CRP, artifact checks, and manifest creation | Authoritative notebook for the production YOLO CRP artifact set |
+| [`yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) | Full validated BRK CRP workflow, selection diagnostics, one-layer CRP, result checks, and manifest creation | Authoritative notebook for the production YOLO CRP relevance statistics and selection manifest |
 | [`extract_crp_manifest.py`](examples/extract_crp_manifest.py) | Recovers the exact sample/class selection from saved output in an older CRP notebook and writes a manifest | Migration/recovery tool only; new runs should write the manifest directly |
 | [`yolo_brk_pcx.ipynb`](examples/yolo_brk_pcx.ipynb) | Loads the CRP manifest, exports per-class attribution banks and metadata, fits/caches GMM prototypes, displays every prototype, and generates PCX plots | Authoritative notebook for production YOLO PCX |
 | [`yolo_concept_prototype.ipynb`](examples/yolo_concept_prototype.ipynb) | General organized YOLO PCX notebook covering paths, imports, configuration, dataset/model loading, and explanation visualization | Concept/prototype exploration and learning; verify its constants before reusing outputs |
@@ -423,7 +424,7 @@ The script performs the following safeguards before CRP:
 4. creates a `DetectionSubset`, because empty post-NMS results cannot provide a differentiable target;
 5. runs glocal CRP and writes relevance/activation maxima and statistics.
 
-For production artifacts, follow the final one-layer section of `examples/yolo_brk_crp.ipynb`. It records only:
+For production CRP results, follow the final one-layer section of `examples/yolo_brk_crp.ipynb`. It records only:
 
 ```text
 module.backbone.ERBlock_3.0.rbr_dense.conv
@@ -507,7 +508,7 @@ The current PIDNet model loader obtains its checkpoint/configuration through `LC
 | YOLO stride | `32` | same | Controls letterbox padding alignment |
 | CRP IoU threshold | `0.5` | `--iou-threshold` | Higher values give cleaner ground-truth matches but fewer PCX samples |
 | CRP scan limit | all | `--scan-limit` | Use a small value only for smoke tests |
-| CRP canonizer | enabled | `--no-canonizer` disables it | Model-specific graph/rule preparation; keep enabled for production artifacts |
+| CRP canonizer | enabled | `--no-canonizer` disables it | Model-specific graph/rule preparation; keep enabled for production CRP results |
 | CRP recorded layers | all conv layers by CLI; one production layer in notebook | `run_analysis(record_layers=...)` | More layers cost more time/storage; PCX requires its chosen layer to be present |
 | CRP batch size | `1` | `src/glocal_analysis.py` | GPU-memory/runtime tradeoff |
 | CRP layer chunk size | `4` | `src/glocal_analysis.py` | Number of recorded layers per attribution pass |
@@ -527,7 +528,7 @@ Choose `num_prototypes` only after inspecting cluster quality and sample count. 
 
 ## Adding new data, weights, or preprocessing
 
-Use a new run directory for every artifact generation. This makes rollback possible and prevents stale caches from silently influencing results.
+Use a new run directory whenever CRP relevance statistics, PCX attribution banks, GMM prototypes, or reference images are recalculated. This makes rollback possible and prevents stale caches from silently influencing results.
 
 ### If only new inference images arrive
 
@@ -540,7 +541,7 @@ No retraining or CRP/PCX regeneration is required if the checkpoint, classes, pr
 3. Update `class_names` and all explicit class mappings. For YOLO production, also update `resolve_display_class_names` behavior and the hard validation in `src/explanator.py`.
 4. Re-run dataset validation, CRP selection, CRP, and PCX from scratch.
 5. Generate a new manifest and new attribution/metadata banks.
-6. Point runtime environment variables to the complete new artifact set.
+6. Point runtime environment variables to the matching new CRP results, PCX banks, prototype models, and reference images.
 
 Dataset order is significant: the manifest and PCX metadata contain dataset indices. Adding, removing, or renaming files can shift the natural sort order, so old manifests must not be reused.
 
@@ -562,7 +563,7 @@ For YOLO, update both offline and online paths:
 - the matching geometry in `_ground_truth_in_model_coordinates(...)`;
 - notebook preprocessing cells used to create the manifest and PCX banks.
 
-For PIDNet, update the dataset/base-dataset parameters and the inference transform together. Any change in resize, crop, normalization, channel order, mask encoding, augmentation, or sample ordering invalidates prior CRP/PCX artifacts.
+For PIDNet, update the dataset/base-dataset parameters and the inference transform together. Any change in resize, crop, normalization, channel order, mask encoding, augmentation, or sample ordering invalidates prior CRP relevance statistics, PCX attribution banks, GMM prototypes, and reference-image caches.
 
 ### If architecture or explanation layer changes
 
@@ -570,18 +571,18 @@ For PIDNet, update the dataset/base-dataset parameters and the inference transfo
 2. Add or update its attributor, canonizer, composite, and visualization in `LCRP/utils/crp_configs.py`.
 3. Inspect valid convolution names using `crp.helper.get_layer_names`.
 4. Set exactly the same layer in CRP, PCX-bank generation, GMM fitting, plotting, and `src/explanator.py`.
-5. Rebuild every artifact.
+5. Recalculate the CRP statistics, PCX attribution banks, GMM prototypes, and reference images.
 
 Changing only the string in `Explanator` is insufficient: a new layer normally has a different channel count, making old attribution banks and GMMs incompatible.
 
-### Artifact promotion checklist
+### Explanation-data promotion checklist
 
 Before deployment, confirm:
 
 - checkpoint and manifest checkpoint basename match;
 - dataset length/order and manifest length match;
 - class order is correct;
-- the selected layer exists and matches all artifact paths;
+- the selected layer exists and matches all CRP, PCX, GMM, and reference-image paths;
 - every class bank is a finite two-dimensional array;
 - each metadata row count equals its bank row count;
 - the chosen prototype count matches each GMM cache;
@@ -608,7 +609,7 @@ The person/vehicle runtime supports these environment variables:
 
 MinIO credentials, endpoint, and bucket behavior are currently constants in `src/minio_client.py`. Before deployment, migrate them to environment variables or a secret manager, configure them for the target environment, and rotate any credentials that have been exposed in source history.
 
-Example local artifact configuration:
+Example local explanation-data configuration:
 
 ```bash
 export PERSON_VEHICLE_CHECKPOINT="$PWD/models/best_ckpt.pt"
@@ -669,7 +670,7 @@ curl -s http://localhost:8080/tfa02/tasks
 docker logs explanation_tfa02 2>&1 | tail -n 200
 ```
 
-For an artifact-level smoke test, generate one explanation from `examples/yolo_brk_pcx.ipynb` and verify that a readable PNG appears under the new `pcx_plots/` directory. This catches path, layer, bank, metadata, GMM, class, and reference-image incompatibilities before deploying the API.
+For an explanation-data smoke test, generate one explanation from `examples/yolo_brk_pcx.ipynb` and verify that a readable PNG appears under the new `pcx_plots/` directory. This catches path, layer, bank, metadata, GMM, class, and reference-image incompatibilities before deploying the API.
 
 ## Docker deployment
 
@@ -691,19 +692,19 @@ The image starts Redis, Flask, and one RQ worker through Supervisor. The supplie
 ./run_docker.sh
 ```
 
-Equivalent command with explicit artifact mounts and configuration:
+Equivalent command with explicit explanation-data mounts and configuration:
 
 ```bash
 docker run --rm \
   --name explanation_tfa02 \
   --gpus all \
   -p 8080:8080 \
-  -e PERSON_VEHICLE_CHECKPOINT=/artifacts/models/best_ckpt.pt \
-  -e PERSON_VEHICLE_DATA_ROOT=/artifacts/data/person_vehicle_detection \
-  -e PERSON_VEHICLE_CRP_DIR=/artifacts/output/crp/yolo_person_car_full \
-  -e PERSON_VEHICLE_PCX_DIR=/artifacts/output/pcx/from_yolo_person_car_full \
-  -e PERSON_VEHICLE_REF_IMAGES_DIR=/artifacts/output/ref_imgs_yolo_person_car_full \
-  -v /absolute/host/artifacts:/artifacts:ro \
+  -e PERSON_VEHICLE_CHECKPOINT=/explanation-data/models/best_ckpt.pt \
+  -e PERSON_VEHICLE_DATA_ROOT=/explanation-data/data/person_vehicle_detection \
+  -e PERSON_VEHICLE_CRP_DIR=/explanation-data/output/crp/yolo_person_car_full \
+  -e PERSON_VEHICLE_PCX_DIR=/explanation-data/output/pcx/from_yolo_person_car_full \
+  -e PERSON_VEHICLE_REF_IMAGES_DIR=/explanation-data/output/ref_imgs_yolo_person_car_full \
+  -v /absolute/host/explanation-data:/explanation-data:ro \
   explanation_tfa02
 ```
 
@@ -720,13 +721,13 @@ The code can select CPU when CUDA is unavailable, and the PIDNet path has an out
 docker exec explanation_tfa02 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"
 ```
 
-To publish, retain the GHCR steps in the original README above, use an immutable version tag, push it, and provide the deployment operator with the exact artifact version and required environment variables. Do not promote an image merely because `/ping` succeeds; also send a representative entity and wait for its queued task to complete.
+To publish, retain the GHCR steps in the original README above, use an immutable version tag, push it, and provide the deployment operator with the exact explanation-data version and required environment variables. Do not promote an image merely because `/ping` succeeds; also send a representative entity and wait for its queued task to complete.
 
 ## Troubleshooting
 
 - **No samples accepted for CRP:** inspect class order, prediction quality, annotation geometry, and IoU threshold. Use `--scan-limit` for quick diagnostics, but do not lower IoU without checking examples.
 - **Empty/non-differentiable detection:** CRP must run on the validated `DetectionSubset`; images with empty post-NMS output are intentionally excluded.
-- **Manifest mismatch:** checkpoint, dataset size/order, or artifacts differ. Regenerate the artifact set.
+- **Manifest mismatch:** checkpoint, dataset size/order, or CRP/PCX results differ. Recalculate the matching CRP statistics, PCX banks, GMM prototypes, and reference images.
 - **Missing layer:** print available convolution layers and use the exact canonized model name. Layer strings are architecture-specific.
 - **GMM feature mismatch:** the PCX bank came from another layer/model. Do not reshape it; rebuild it.
 - **Cached prototype-count mismatch:** select a new PCX output directory or remove only the clearly identified stale cache, then refit.
