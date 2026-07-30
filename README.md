@@ -1,5 +1,5 @@
 # PCX-TEMA
-
+# data : https://aischnacken.slack.com/docs/T0162BZ537W/F09S95JB9LG
 # GETING THE LOGS 
 
 curl -i -X POST http://localhost:8080/tfa02/post_data \
@@ -169,29 +169,29 @@ The repository combines four related explanation ideas:
 1. **LRP (Layer-wise Relevance Propagation)** explains a selected model output by redistributing its prediction score backward, layer by layer, toward the input. The redistribution follows the contributions made by lower-layer neurons and is designed around relevance conservation. At input level, the resulting relevance scores show how individual pixels contributed to the selected prediction.
 2. **CRP (Concept Relevance Propagation)** extends LRP by conditioning the backward relevance flow on selected hidden-layer units. In convolutional networks, this project interprets individual channels as latent concepts. CRP therefore identifies which concepts contributed to a prediction, assigns concept relevance scores, and produces concept-conditional heatmaps showing where those concepts occur. Relevance Maximization (RelMax) complements this by retrieving dataset examples for which a concept was strongly relevant to a prediction, rather than merely highly activated.
 3. **L-CRP (CRP for Localization Models)** adapts this local-and-global, or **glocal**, concept analysis to object detection and semantic segmentation. For an object detector, relevance is initialized from the class score of a selected bounding box, allowing a separate explanation for each detected object. For segmentation, relevance can be initialized from the selected class region or another region of interest. The explanation communicates which latent concepts contributed, how strongly they contributed, and where they are localized in the input.
-4. **PCX (Prototypical Concept-based Explanations)** represents each decision by its concept-relevance vector and models recurring class-wise decision strategies with prototypes. In this repository, Gaussian mixture models group similar relevance vectors and their component means represent prototypical concept-use strategies. A local prediction can then be compared with its nearest prototype. This helps reveal which learned decision strategy was used and whether a prediction deviates from normal prototypical behavior, which can indicate an outlier, a spurious strategy, or a data-quality issue.
+4. **PCX (Prototypical Concept-based Explanations)** represents each decision by its concept-relevance vector and models recurring class-wise decision strategies with prototypes.Gaussian mixture models group similar relevance vectors and their component means represent prototypical concept-use strategies. A local prediction can then be compared with its nearest prototype. This helps reveal which learned decision strategy was used and whether a prediction deviates from normal prototypical behavior, which can indicate an outlier, a spurious strategy, or a data-quality issue.
 
 The **TFA-02 service** applies these methods operationally: it receives an Orion/NGSI entity, obtains the corresponding image from MinIO, queues the work through Redis/RQ, runs the detector or segmenter and its PCX explanation, stores the explanation images, and updates the external entity.
 
 CRP and PCX are not independent:
 
 ```text
-images + labels + checkpoint + preprocessing
-                    |
-                    v
-       validate and select usable predictions
-                    |
-                    v
-       CRP relevance statistics + selection manifest
-                    |
-                    v
-       class-specific attribution banks + metadata
-                    |
-                    v
-           GMM prototypes and reference images
-                    |
-                    v
-      explanation plot for a new model prediction
+                      images + labels + checkpoint + preprocessing
+                                            |
+                                            v
+                          validate and select usable predictions
+                                            |
+                                            v
+                          calculate the CRP relevance statistics 
+                                            |
+                                            v
+                      generate the class-specific attribution banks 
+                                            |
+                                            v
+clustering GMM to compute cluster centroids (prototypes) and store the reference images for concepts
+                                            |
+                                            v
+                generating the explanation plot for a new model prediction
 ```
 
 The checkpoint, class order, dataset order, preprocessing, selected layer, CRP relevance-statistics directory, PCX attribution-bank directory, and reference-image directory form one versioned set of explanation data. Do not mix results generated by different versions of any of these inputs.
@@ -200,14 +200,14 @@ The checkpoint, class order, dataset order, preprocessing, selected layer, CRP r
 
 For the current production YOLOv6 workflow, use these files in order:
 
-1. [`examples/yolo_BRK_preprocecing_check.ipynb`](examples/yolo_BRK_preprocecing_check.ipynb) to inspect image/label preprocessing and box geometry.
+1. [`examples/yolo_BRK_preprocecing_check.ipynb`](examples/yolo_BRK_preprocecing_check.ipynb) to inspect image/label preprocessing and prediction boxes corniations and make sure that we generate the same output as AUTH.
 2. [`examples/run_yolov6_crp.py`](examples/run_yolov6_crp.py) for a command-line CRP smoke test.
-3. [`examples/yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) to calculate the validated, manifest-backed, one-layer production CRP relevance statistics.
+3. [`examples/yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) to calculate one-layer production CRP relevance statistics, on the validtated and selected data.
 4. [`examples/yolo_brk_pcx.ipynb`](examples/yolo_brk_pcx.ipynb) to create class-specific PCX banks, metadata, GMMs, reference images, and plots.
 5. [`examples/car_prototype_audit.ipynb`](examples/car_prototype_audit.ipynb) to audit whether the learned car prototypes are meaningful.
 6. [`src/explanator.py`](src/explanator.py) to deploy the code and pcx setting set used by the service.
 
-[`examples/yolo_concept_prototype.ipynb`](examples/yolo_concept_prototype.ipynb) is the renamed general YOLO PCX/concept-prototype notebook. It is useful for exploration, but the two validated BRK notebooks above are the authoritative production workflow.
+[`examples/yolo_concept_prototype.ipynb`](examples/yolo_concept_prototype.ipynb) It is useful for exploration, but the BRK notebooks above are the production workflow.
 
 For the current flood/PIDNet workflow, start with [`examples/pidnet.ipynb`](examples/pidnet.ipynb) for layer selection, continue with [`examples/pidnet_crp_pcx.ipynb`](examples/pidnet_crp_pcx.ipynb), and compare the BRK experiments in [`examples/pidnet_BRK.ipynb`](examples/pidnet_BRK.ipynb) and [`examples/pidnet_BRK_outlier.ipynb`](examples/pidnet_BRK_outlier.ipynb). The service ultimately calls [`src/plotpcx_gpu.py`](src/plotpcx_gpu.py).
 
@@ -219,37 +219,24 @@ The `examples/` directory contains research notebooks, production-preparation no
 
 | File | What it contains | When to use it |
 |---|---|---|
-| [`yolo_BRK_preprocecing_check.ipynb`](examples/yolo_BRK_preprocecing_check.ipynb) | BRK image/label preprocessing checks, including the detector input and annotation geometry | Run before expensive CRP when data, resize, padding, or labels have changed |
+| [`yolo_BRK_preprocecing_check.ipynb`](examples/yolo_BRK_preprocecing_check.ipynb) | BRK image/label preprocessing checks, including the detector input and annotation geometry | Run before expensive CRP when data, resize, padding, or any preprocecing step have changed |
 | [`run_yolov6_crp.py`](examples/run_yolov6_crp.py) | Validates YOLO labels, maps dataset classes to detector classes, reproduces 640-pixel YOLOv6 letterboxing, filters predictions by same-class IoU, constructs `DetectionSubset`, and runs CRP | Recommended CLI smoke test and reusable CRP entry point |
-| [`yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) | Full validated BRK CRP workflow, selection diagnostics, one-layer CRP, result checks, and manifest creation | Authoritative notebook for the production YOLO CRP relevance statistics and selection manifest |
+| [`yolo_brk_crp.ipynb`](examples/yolo_brk_crp.ipynb) | Full validated BRK CRP workflow, selection diagnostics, one-layer CRP, result checks, | Authoritative notebook for the production YOLO CRP relevance statistics and selection manifest |
 | [`extract_crp_manifest.py`](examples/extract_crp_manifest.py) | Recovers the exact sample/class selection from saved output in an older CRP notebook and writes a manifest | Migration/recovery tool only; new runs should write the manifest directly |
 | [`yolo_brk_pcx.ipynb`](examples/yolo_brk_pcx.ipynb) | Loads the CRP manifest, exports per-class attribution banks and metadata, fits/caches GMM prototypes, displays every prototype, and generates PCX plots | Authoritative notebook for production YOLO PCX |
-| [`yolo_concept_prototype.ipynb`](examples/yolo_concept_prototype.ipynb) | General organized YOLO PCX notebook covering paths, imports, configuration, dataset/model loading, and explanation visualization | Concept/prototype exploration and learning; verify its constants before reusing outputs |
+| [`yolo_concept_prototype.ipynb`](examples/yolo_concept_prototype.ipynb) | Concept/prototype exploration, verify its constants before reusing outputs |
 | [`car_prototype_audit.ipynb`](examples/car_prototype_audit.ipynb) | Focused visual and quantitative audit of car prototypes | Use after fitting PCX to select or validate the car prototype count |
-| [`yolo_brk_pcx.pdf`](examples/yolo_brk_pcx.pdf) | Static export of the YOLO BRK PCX notebook/results | Read-only review; it is not an executable input |
 
 ### PIDNet/flood notebooks and scripts
 
 | File | What it contains | When to use it |
 |---|---|---|
 | [`pidnet.ipynb`](examples/pidnet.ipynb) | PIDNet layer comparison and recommendations for flood concept analysis | Select a meaningful explanation layer before regenerating CRP/PCX |
-| [`pidnet_crp_pcx.ipynb`](examples/pidnet_crp_pcx.ipynb) | Combined CRP and PCX research workflow for PIDNet | Main flood CRP/PCX notebook |
-| [`pidnet_crp_pcx_old.ipynb`](examples/pidnet_crp_pcx_old.ipynb) | Earlier version of the combined PIDNet workflow | Historical comparison only; prefer the non-`old` notebook |
 | [`pidnet_BRK.ipynb`](examples/pidnet_BRK.ipynb) | BRK-specific PIDNet concept/prototype experiments | BRK flood analysis and prototype tuning |
 | [`pidnet_BRK_outlier.ipynb`](examples/pidnet_BRK_outlier.ipynb) | BRK prototype fitting and outlier-score experiments, including single-image/debug paths | Investigate unusual samples and prototype coverage |
-| [`pidnet_test.py`](examples/pidnet_test.py) | Interactive PIDNet LRP/canonizer comparison using a Qt Matplotlib backend | Developer experiment; paths/imports are older and must be adjusted before use |
 
-### Generated files under `examples/`
 
-| Path | Meaning |
-|---|---|
-| `new-ref-img-BRK/*.h5` | Cached PIDNet concept reference images, one HDF5 file per layer |
-| `ref_images_pidnet_flood_BRK/*.h5` | BRK flood reference-image cache |
-| `output/test_prediction_DJI_0234.png` | Generated example prediction image |
-| `__pycache__/` | Python bytecode cache; not an input and safe to regenerate |
-| `.DS_Store` | macOS filesystem metadata; not used by the project |
 
-Do not treat an HDF5 reference cache as portable across checkpoints, datasets, preprocessing, or layers. Prefer creating versioned caches under `output/` for new production runs.
 
 ## Complete `src/` catalog
 
@@ -257,7 +244,7 @@ Do not treat an HDF5 reference cache as portable across checkpoints, datasets, p
 
 | File | Responsibility |
 |---|---|
-| [`src/__init__.py`](src/__init__.py) | Import-time compatibility shims for NumPy, optional `wandb`, and LCRP model imports |
+| [`src/__init__.py`](src/__init__.py) | Performs package initialization, applies compatibility fixes for NumPy, handles optional `wandb` imports, and exposes LCRP models. |
 | [`src/explanator.py`](src/explanator.py) | Central runtime orchestrator: lazy-loads models/datasets, selects the handler for each entity type, runs YOLO or PIDNet PCX, handles CUDA memory fallbacks, records KPIs, and constructs explanation results |
 | [`src/entities.py`](src/entities.py) | NGSI-LD templates and builders for person/vehicle and flood explanation entities |
 | [`src/minio_client.py`](src/minio_client.py) | MinIO image/text upload and download wrapper plus bucket constants |
@@ -269,23 +256,23 @@ Do not treat an HDF5 reference cache as portable across checkpoints, datasets, p
 | [`src/utils_DLR.py`](src/utils_DLR.py) | NumPy rolling-window, tiling, and untile/blending helpers for large DLR imagery |
 | [`src/utils/utils.py`](src/utils/utils.py) | PIDNet/general training utilities: full-model loss wrapper, metrics, logging, confusion matrix, and learning-rate adjustment |
 
-`src/minio_client.py` currently defines the MinIO connection constants in source code. For a production or public deployment, replace that pattern with secret/environment injection and rotate any exposed credentials; do not add credentials to this README.
+`src/minio_client.py` currently defines the MinIO connection constants in source code.
 
 ### CRP and PCX core
 
 | File | Responsibility | Status |
 |---|---|---|
 | [`src/glocal_analysis.py`](src/glocal_analysis.py) | Dataset-wide CRP analysis, multi-target broadcasting, explicit layer recording, layer chunking, checkpoint saves, and CRP statistics | Current shared CRP implementation |
-| [`src/plot_crp_explanations.py`](src/plot_crp_explanations.py) | Local CRP plotting, layer-name resolution, saved-stat aliases, CPU fallback, heatmap rendering, optimized and legacy plot functions, and figure-to-array conversion | Current CRP visualization used by `Explanator` |
-| [`src/pcx_helper.py`](src/pcx_helper.py) | Shared YOLO PCX helpers for class-specific reference caching, detection crops, prototype sample grids, and interactive GMM HTML/2-D views | Current helper for YOLO PCX |
-| [`src/plot_pcx_explanations_YOLO.py`](src/plot_pcx_explanations_YOLO.py) | Current class-locked YOLO PCX pipeline: validates attribution banks/metadata/GMM caches, attributes live or dataset images, chooses a same-class prototype, loads references, and renders the explanation | Current production YOLO implementation |
+| [`src/plot_crp_explanations.py`](src/plot_crp_explanations.py) | Local CRP plotting, heatmap rendering,CRP plot functions | Current CRP visualization used by `Explanator` |
+| [`src/pcx_helper.py`](src/pcx_helper.py) | Shared YOLO PCX helpers for class-specific reference caching, detection image crops, prototype sample grids, and interactive GMM HTML/2-D views | Current helper for YOLO PCX |
+| [`src/plot_pcx_explanations_YOLO.py`](src/plot_pcx_explanations_YOLO.py) | Current class-locked YOLO PCX pipeline: validates attribution banks/metadata/GMM caches, attributes on dataset images, chooses the same-class prototype, loads references, and renders the explanation | Current production YOLO implementation |
 | [`src/plotpcx_gpu.py`](src/plotpcx_gpu.py) | Device-aware PIDNet PCX pipeline with reference retrieval, precision controls, heatmap alignment, memory reduction, CPU fallback, plotting, and outlier scoring | Current production PIDNet implementation |
 | [`src/plot_pcx_proto_concept_matrix.py`](src/plot_pcx_proto_concept_matrix.py) | Builds prototype-versus-concept matrices and prototype-only figures | Analysis/visualization helper |
-| [`src/yolo_pcx_test.py`](src/yolo_pcx_test.py) | Earlier standalone YOLO PCX plotting and target-box matching experiment | Experimental; not called by the service |
+| [`src/yolo_pcx_test.py`](src/yolo_pcx_test.py) | Earlier standalone YOLO PCX plotting and target-box matching experiment | Experimental; not called by the service and only used in notebooks |
 
 ### Alternative and legacy PCX implementations
 
-These files are retained for research history and notebook compatibility. They have overlapping names but are not the service entry points:
+These files are retained for research history and notebook compatibility and usage. They have overlapping names but are not the service entry points:
 
 | File | Scope |
 |---|---|
@@ -312,7 +299,6 @@ When changing deployed behavior, begin at the imports in `src/explanator.py`: it
 | [`src/datasets/flood_dataset_crp.py`](src/datasets/flood_dataset_crp.py) | Flood dataset variant created for CRP experiments | Experimental/legacy |
 | [`src/datasets/flood_dataset_metrics.py`](src/datasets/flood_dataset_metrics.py) | Flood dataset variant used in metric experiments | Experimental/legacy |
 | [`src/datasets/flood_test.py`](src/datasets/flood_test.py) | Flood dataset test/experiment variant | Experimental/legacy |
-| [`src/datasets/flood_datasetpy`](src/datasets/flood_datasetpy) | Extensionless historical flood dataset copy; it is not a normal importable `.py` module | Legacy; do not use for new code |
 | [`src/datasets/__init__.py`](src/datasets/__init__.py) | Marks the dataset package | Package marker |
 
 Because several flood modules define a class named `FloodDataset`, always check the import rather than relying on the class name. Production uses `from src.datasets.flood_dataset import FloodDataset`.
@@ -338,6 +324,17 @@ Generated `src/__pycache__/` files are interpreter caches, not source files, and
 | [`Dockerfile`](Dockerfile), [`supervisord.conf`](supervisord.conf), [`run_docker.sh`](run_docker.sh) | Container build and process deployment |
 | [`tests/`](tests) | Unit tests and external-service integration helpers |
 
+### Generated files under `output/`
+
+| Path | Meaning |
+|---|---|
+| `new-ref-img-BRK/*.h5` | Cached PIDNet concept reference images, one HDF5 file per layer |
+| `ref_images_pidnet_flood_BRK/*.h5` | BRK flood reference-image cache |
+| `test_prediction_DJI_0234.png` | Generated example prediction image |
+| `__pycache__/` | Python bytecode cache; not an input and safe to regenerate |
+| `.DS_Store` | macOS filesystem metadata; not used by the project |
+
+Do not treat an HDF5 reference cache as portable across checkpoints, datasets, preprocessing, or layers. Prefer creating versioned caches under `output/` for new production runs.
 ## Installation
 
 The pinned environment was built for Python 3.8:
@@ -530,7 +527,7 @@ Choose `num_prototypes` only after inspecting cluster quality and sample count. 
 
 Use a new run directory whenever CRP relevance statistics, PCX attribution banks, GMM prototypes, or reference images are recalculated. This makes rollback possible and prevents stale caches from silently influencing results.
 
-### If only new inference images arrive
+### If only new test images arrive
 
 No retraining or CRP/PCX regeneration is required if the checkpoint, classes, preprocessing, and reference dataset are unchanged. The service can explain a new image using the existing class prototypes. Images that belong to the CRP manifest can use their stored sample identity; unseen images use the live-image path.
 
@@ -575,12 +572,12 @@ For PIDNet, update the dataset/base-dataset parameters and the inference transfo
 
 Changing only the string in `Explanator` is insufficient: a new layer normally has a different channel count, making old attribution banks and GMMs incompatible.
 
-### Explanation-data promotion checklist
+### Explanation-data checklist
 
 Before deployment, confirm:
 
 - checkpoint and manifest checkpoint basename match;
-- dataset length/order and manifest length match;
+- dataset length/order and length match;
 - class order is correct;
 - the selected layer exists and matches all CRP, PCX, GMM, and reference-image paths;
 - every class bank is a finite two-dimensional array;
@@ -734,3 +731,4 @@ To publish, retain the GHCR steps in the original README above, use an immutable
 - **CUDA out of memory:** use one CRP layer, keep batch size at one, reduce displayed references/concepts for inference, or use the implemented CPU fallback where available.
 - **New image produces no explanation:** the detector may have no valid boxes or all confidence values may be below `PERSON_VEHICLE_MIN_EXPLANATION_CONFIDENCE`.
 - **Notebook imports fail:** launch Jupyter from the repository root and replace old absolute paths in the first configuration cell.
+ 
