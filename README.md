@@ -275,9 +275,31 @@ Verify startup and GPU access:
 
 ```bash
 curl -f http://localhost:8080/tfa02/ping
-docker logs -f explanation_tfa02
 docker exec explanation_tfa02 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"
 ```
+
+### Post-build container tests
+
+After the container is running and `/tfa02/ping` succeeds, run the local integration test from the repository root:
+
+```bash
+python tests/test_post_data.py ImageMetadata
+```
+
+Confirm that the request is accepted, the worker processes the queued task, and the task reaches a completed state:
+
+```bash
+curl -s http://localhost:8080/tfa02/tasks
+docker logs explanation_tfa02 2>&1 | tail -n 200
+```
+
+After the image has been deployed to an authorized TEMA cluster environment, run the cloud integration test:
+
+```bash
+python tests/test_post_data.py ImageMetadata --cloud
+```
+
+The cloud test contacts shared infrastructure. Verify its configured URL and identifiers before running it, then confirm the uploaded explanation output and external entity update.
 
 The code contains CPU paths and selected memory fallbacks, but production explanation generation is computationally expensive. A compatible CUDA environment is recommended.
 
@@ -313,7 +335,7 @@ Provide the TEMA cluster operator with:
 After deployment:
 
 1. call `/tfa02/ping`;
-2. send an authorized representative notification;
+2. run `python tests/test_post_data.py ImageMetadata --cloud`;
 3. confirm that the task moves from queued to completed;
 4. inspect Flask and worker logs;
 5. verify the uploaded explanation output;
