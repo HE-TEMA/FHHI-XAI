@@ -2,8 +2,9 @@ import os
 import gc
 import sys
 import copy
+import time
 import warnings
-from typing import Optional
+from typing import List, Optional, Tuple
 import joblib
 import h5py
 import numpy as np
@@ -171,6 +172,100 @@ def _show_message_box(
     ax.set_ylim([149, 0])
     ax.set_xticks([])
     ax.set_yticks([])
+
+
+def _select_diverse_concepts(
+    channel_rels_vec: torch.Tensor,
+    attributions_np: np.ndarray,
+    max_concepts: int = 4,
+    candidate_pool: int = 12,
+    corr_penalty: float = 0.35,
+    corr_skip_threshold: float = 0.92,
+) -> Tuple[np.ndarray, np.ndarray]:
+    rels = np.asarray(channel_rels_vec.detach().cpu(), dtype=np.float32).reshape(-1)
+    if rels.size == 0:
+        return np.array([], dtype=int), np.array([], dtype=np.float32)
+
+    max_concepts = max(1, min(int(max_concepts), rels.size))
+    ranked = np.argsort(-rels)
+    pool = ranked[: min(max(candidate_pool, max_concepts), ranked.size)]
+    if pool.size <= max_concepts or attributions_np.ndim != 2 or attributions_np.shape[0] < 2:
+        chosen = pool[:max_concepts]
+        return chosen.astype(int), rels[chosen]
+
+    bank = np.nan_to_num(attributions_np[:, pool], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    bank -= bank.mean(axis=0, keepdims=True)
+    bank_std = bank.std(axis=0, keepdims=True)
+    bank_std[bank_std < 1e-8] = 1.0
+    bank /= bank_std
+    corr = np.abs(np.corrcoef(bank, rowvar=False))
+    corr = np.nan_to_num(corr, nan=0.0)
+
+    chosen_pos = [0]
+    remaining = list(range(1, pool.size))
+    while remaining and len(chosen_pos) < max_concepts:
+        best_pos = None
+        best_score = -np.inf
+        slots_left = max_concepts - len(chosen_pos)
+        for pos in remaining:
+            max_corr = float(corr[pos, chosen_pos].max()) if chosen_pos else 0.0
+            if max_corr >= corr_skip_threshold and len(remaining) > slots_left:
+                continue
+            score = float(rels[pool[pos]]) - corr_penalty * max_corr
+            if score > best_score:
+                best_score = score
+                best_pos = pos
+        if best_pos is None:
+            best_pos = remaining[0]
+        chosen_pos.append(best_pos)
+        remaining.remove(best_pos)
+
+    chosen = pool[np.array(chosen_pos[:max_concepts], dtype=int)]
+    order = np.argsort(-rels[chosen])
+    chosen = chosen[order]
+    return chosen.astype(int), rels[chosen]
+
+
+def _select_diverse_reference_images(
+    images: List[Image.Image],
+    limit: int,
+    hash_size: int = 24,
+    duplicate_threshold: float = 2.0,
+) -> List[Image.Image]:
+    if limit <= 0 or not images:
+        return []
+
+    selected: List[Image.Image] = []
+    fingerprints: List[np.ndarray] = []
+    for image in images:
+        arr = np.asarray(image.resize((hash_size, hash_size), Image.BILINEAR), dtype=np.float32)
+        if arr.ndim == 3:
+            arr = arr.mean(axis=2)
+        arr -= arr.mean()
+        norm = np.linalg.norm(arr)
+        if norm > 1e-8:
+            arr /= norm
+
+        is_duplicate = False
+        for prev in fingerprints:
+            if np.linalg.norm(arr - prev) <= duplicate_threshold / hash_size:
+                is_duplicate = True
+                break
+
+        if not is_duplicate:
+            selected.append(image)
+            fingerprints.append(arr)
+        if len(selected) >= limit:
+            break
+
+    if len(selected) < min(limit, len(images)):
+        for image in images:
+            if len(selected) >= limit:
+                break
+            if all(image is not chosen for chosen in selected):
+                selected.append(image)
+
+    return selected[:limit]
 
 
 def _resize_array_to_panel(arr: np.ndarray) -> np.ndarray:
@@ -626,8 +721,11 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
     # Getting top concepts/neurons for the given image in the given layer
     channel_rels = channel_rels.float()
-    topk = torch.topk(channel_rels[0], n_concepts)
-    topk_ind = topk.indices.detach().cpu().numpy()
+    topk_ind, topk_rel = _select_diverse_concepts(
+        channel_rels[0],
+        attributions_np,
+        max_concepts=n_concepts,
+    )
     effective_n_concepts = min(len(topk_ind), n_concepts)
     if effective_n_concepts == 0:
         effective_n_concepts = 1
@@ -889,9 +987,8 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
                         # outlier thresholds
                         lower_threshold = np.percentile(scores, 1)
-                        upper_threshold = np.percentile(scores, 99)
 
-                        outlier_text = "Outlier" if (s_sample_val < lower_threshold or s_sample_val > upper_threshold) else "Ordinary"
+                        outlier_text = "Outlier" if s_sample_val < lower_threshold else "Ordinary"
                         bbox_props = dict(boxstyle="round,pad=0.3",
                                           edgecolor="red" if outlier_text == "Outlier" else "green",
                                           facecolor="red" if outlier_text == "Outlier" else "green",
@@ -929,7 +1026,9 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                         ax.set_title("concept visualizations", fontsize=12, pad=8)
                     # build grid from ref images (PIL)
                     try:
-                        concept_refs = ref_imgs[topk_ind[r]][:effective_n_refimgs]
+                        concept_refs = _select_diverse_reference_images(
+                            ref_imgs[topk_ind[r]], effective_n_refimgs
+                        )
                         grid = make_grid([resize(torch.from_numpy(np.asarray(i).copy()).permute((2, 0, 1))) for i in concept_refs],
                                          nrow=max(1, effective_n_refimgs // 2), padding=0)
                         grid = np.array(zimage.imgify(grid.detach().cpu()))
@@ -1049,6 +1148,29 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 pass
 
     fig.subplots_adjust(left=0.08, right=0.975, wspace=0.12, hspace=0.38)
+
+    #add separation line after column 0, for readability
+    try:
+        left_box = axs[0, 0].get_position()
+        right_box = axs[0, 1].get_position()
+        divider_x = (left_box.x1 + right_box.x0) / 2.0
+        top = max(axs[0, c].get_position().y1 for c in range(axs.shape[1]))
+        bottom = min(axs[-1, c].get_position().y0 for c in range(axs.shape[1]))
+        fig.add_artist(
+            plt.Line2D(
+                [divider_x, divider_x], [bottom, top],
+                transform=fig.transFigure,
+                color="#b0b0b0", linewidth=1.2, linestyle=(0, (4, 3)),
+            )
+        )
+        fig.text(left_box.x0, top + 0.012, "prediction", fontsize=9, color="#707070",
+                 ha="left", va="bottom", style="italic")
+        fig.text(right_box.x0, top + 0.012, "per concept", fontsize=9, color="#707070",
+                 ha="left", va="bottom", style="italic")
+    except Exception:
+        # Layout decoration must never take the explanation down with it.
+        pass
+
     sync_device(active_device)
     setattr(fig, "_n_refimgs_used", effective_n_refimgs)
     setattr(fig, "_n_concepts_used", effective_n_concepts)

@@ -33,6 +33,13 @@ def _chunked(items, size):
 def _broadcast_targets_for_feature_visualization(fv, data_batch, targets_samples, samples_batch):
     if isinstance(targets_samples, np.ndarray):
         normalized_targets = targets_samples.tolist()
+        # Wrap a single sample's target vector like the list branch below does.
+        if (
+            len(samples_batch) == 1
+            and normalized_targets
+            and not isinstance(normalized_targets[0], (list, tuple, np.ndarray))
+        ):
+            normalized_targets = [normalized_targets]
     elif isinstance(targets_samples, (list, tuple)):
         if len(samples_batch) == 1 and targets_samples and not isinstance(targets_samples[0], (list, tuple, np.ndarray)):
             normalized_targets = [list(targets_samples)]
