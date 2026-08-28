@@ -403,24 +403,16 @@ def _resolve_layer_concept(fv, layer_name):
     return None
 
 
-def _call_get_max_reference(fv, concept_ids, layer_name, composite, n_ref, plot_fn, batch_size: int):
+def _call_get_max_reference(fv, concept_ids, layer_name, composite, n_ref, plot_fn,
+                            batch_size: int, use_rf: bool = False):
     """
     Wrapper that prefers RF-aware references but gracefully falls back
     to vanilla references if channel bookkeeping is incomplete.
     """
     concept_ids = list(concept_ids)
 
-    concept = _resolve_layer_concept(fv, layer_name)
-    rf_candidates, fallback_candidates = [], list(concept_ids)
-    if concept is not None and hasattr(concept, "c_n_map"):
-        rf_candidates = []
-        fallback_candidates = []
-        for cid in concept_ids:
-            try:
-                _ = concept.c_n_map[cid]
-                rf_candidates.append(cid)
-            except (IndexError, KeyError, TypeError):
-                fallback_candidates.append(cid)
+    rf_candidates = list(concept_ids) if use_rf else []
+    fallback_candidates = [] if use_rf else list(concept_ids)
 
     def _fetch(ids, rf_flag, allow_retry=True):
         if not ids:
@@ -456,7 +448,8 @@ def _call_get_max_reference(fv, concept_ids, layer_name, composite, n_ref, plot_
     return refs
 
 
-def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_path="examples/output/new-ref-img-BRK/"):
+def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12,
+                   ref_imgs_save_path="examples/output/new-ref-img-BRK/", use_rf: bool = False):
     """
     Get and cache reference images. CPU/PIL based.
     """
@@ -488,6 +481,7 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_
                     n_ref,
                     vis_opaque_img_border_safe,
                     batch_size=1,
+                    use_rf=use_rf,
                 )
                 for key, images_list in new_refs.items():
                     group = f.create_group(str(key))
@@ -510,6 +504,7 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12, ref_imgs_save_
             n_ref,
             vis_opaque_img_border_safe,
             batch_size=1,
+            use_rf=use_rf,
         )
         with h5py.File(ref_imgs_save_path, "w") as f:
             for key, images_list in ref_imgs.items():
@@ -572,7 +567,9 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                                  output_dir_crp="examples/output/crp/CRP-BRK-NEW/",
                                  device=None,
                                  precision: str = "fp32",
-                                 skip_prototype: bool = False):
+                                 skip_prototype: bool = False,
+                                 outlier_percentile: float = 1.0,
+                                 use_rf: bool = False):
     """
     Main function that computes PCX/CRP visualizations.
     This version keeps tensors on GPU when possible and only moves to CPU for
@@ -745,7 +742,9 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
     # Get reference images (CPU / PIL)
     _maybe_empty_cuda_cache(active_device)
-    ref_imgs = get_ref_images(fv, topk_ind, layer_name, composite=composite, n_ref=effective_n_refimgs, ref_imgs_save_path=ref_imgs_path)
+    ref_imgs = get_ref_images(fv, topk_ind, layer_name, composite=composite,
+                              n_ref=effective_n_refimgs, ref_imgs_save_path=ref_imgs_path,
+                              use_rf=use_rf)
 
     # Calculate conditional heatmaps and prototype heatmaps (calls to attribution may return CPU or device tensors)
     conditions = [{"y": class_id, layer_name: int(c)} for c in topk_ind]
@@ -985,8 +984,9 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                         ax.set_yticks([])
                         ax.set_xticks([])
 
-                        # outlier thresholds
-                        lower_threshold = np.percentile(scores, 1)
+                        # Threshold is recomputed over the bank on every call, so
+                        # it always flags this share of the training samples.
+                        lower_threshold = np.percentile(scores, outlier_percentile)
 
                         outlier_text = "Outlier" if s_sample_val < lower_threshold else "Ordinary"
                         bbox_props = dict(boxstyle="round,pad=0.3",

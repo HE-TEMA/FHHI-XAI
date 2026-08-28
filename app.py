@@ -304,10 +304,10 @@ def post_data():
         src_image_filename = entity["filename"]["value"]
         src_image_bucket = entity["bucket"]["value"]
         
-        # Submit tasks for both PersonVehicleDetection and FloodSegmentation
-        entities_to_explain = ['PersonVehicleDetection']
-        # entities_to_explain = ['FloodSegmentation']
-        # entities_to_explain = ['FloodSegmentation', 'PersonVehicleDetection']
+        # configure which entities to explain based on environment variable
+        entities_to_explain = os.environ.get(
+            'ENTITIES_TO_EXPLAIN', 'PersonVehicleDetection'
+        ).split(',')
         
         task_ids = []
         for entity_type in entities_to_explain:
