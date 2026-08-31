@@ -25,10 +25,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from LCRP.models.pidnet import get_pidnet
+from LCRP.models.pidnet import get_pidnet, infer_checkpoint_geometry
 
 from examples.build_crp_pcx_multilayer import DATASETS, build_dataset
-from src.pidnet_loader import infer_checkpoint_geometry
 from src.plotpcx_gpu import plot_pcx_explanations_pidnet
 
 LAYER_ALIASES = {

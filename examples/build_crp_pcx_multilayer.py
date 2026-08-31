@@ -28,10 +28,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from LCRP.models.pidnet import get_pidnet
+from LCRP.models.pidnet import get_pidnet, infer_checkpoint_geometry
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, COMPOSITES
 from src.glocal_analysis import run_analysis
-from src.pidnet_loader import infer_checkpoint_geometry
 
 # Both tasks are PIDNet, so the CRP/PCX machinery is shared. Only the dataset
 # and the checkpoint geometry differ: flood is RGB, fire is RGB + ir.

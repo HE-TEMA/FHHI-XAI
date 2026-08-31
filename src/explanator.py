@@ -26,7 +26,7 @@ from src.datasets.person_car_dataset import PersonCarDataset
 from src.datasets.detection_subset import DetectionSubset
 from src.datasets.flood_dataset import FloodDataset
 from src.datasets.fire_dataset import FireDataset
-from src.pidnet_loader import infer_checkpoint_geometry
+from LCRP.models.pidnet import infer_checkpoint_geometry
 from src.entities import (
     get_fire_segmentation_explanation_entity,
     get_flood_segmentation_explanation_entity,
