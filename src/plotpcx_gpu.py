@@ -1163,9 +1163,10 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                 color="#b0b0b0", linewidth=1.2, linestyle=(0, (4, 3)),
             )
         )
-        fig.text(left_box.x0, top + 0.012, "prediction", fontsize=9, color="#707070",
+        label_offset_frac = (8 + 12 + 4) / 72.0 / fig.get_size_inches()[1]
+        fig.text(left_box.x0, top + label_offset_frac, "prediction", fontsize=9, color="#707070",
                  ha="left", va="bottom", style="italic")
-        fig.text(right_box.x0, top + 0.012, "per concept", fontsize=9, color="#707070",
+        fig.text(right_box.x0, top + label_offset_frac, "per concept", fontsize=9, color="#707070",
                  ha="left", va="bottom", style="italic")
     except Exception:
         # Layout decoration must never take the explanation down with it.
