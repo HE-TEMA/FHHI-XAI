@@ -78,6 +78,9 @@ def main():
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--modality", choices=["rgb", "ir", "all"], default="rgb")
     parser.add_argument("--keep-empty", action="store_true")
+    parser.add_argument("--min-fire-coverage", type=float, default=0.0,
+                        help="fire only: must match the value the PCX bank was built "
+                             "with, or the bank rows and dataset indices disagree.")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
@@ -106,7 +109,8 @@ def main():
     model = get_pidnet(device=device, ckpt_path=checkpoint,
                        classes=classes, in_channels=in_channels).eval()
 
-    extra = ({"modality": args.modality, "require_fire": not args.keep_empty}
+    extra = ({"modality": args.modality, "require_fire": not args.keep_empty,
+              "min_fire_coverage": 0.0 if args.keep_empty else args.min_fire_coverage}
              if args.dataset == "fire" else {})
     dataset = build_dataset(args.dataset, PROJECT_ROOT / spec["data_root"], **extra)
 

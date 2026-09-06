@@ -129,7 +129,7 @@ class Explanator:
         )
         self.fire_ref_images_dir = os.environ.get(
             "FIRE_REF_IMAGES_DIR",
-            os.path.join(self.project_root, "output", "ref_imgs_fire"),
+            os.path.join(self.project_root, "output", "ref_imgs_fire_rf"),
         )
 
         self.kpi_mirror_roots = []
@@ -361,7 +361,7 @@ class Explanator:
                 ref_imgs_path=ref_imgs_path,
                 output_dir_crp=output_dir_crp,
                 output_dir_pcx=output_dir_pcx,
-                precision="autocast_fp16" if (self.device == "cuda" and torch.cuda.is_available()) else "fp32",
+                precision="fp32",
                 use_rf=True,
             )
         except Exception as exc:

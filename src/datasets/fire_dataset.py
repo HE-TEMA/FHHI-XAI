@@ -19,6 +19,7 @@ class FireDataset:
         list_path: Optional[str] = None,
         modality: str = "rgb",
         require_fire: bool = False,
+        min_fire_coverage: float = 0.0,
         crop_size: Tuple[int, int] = (720, 1280),   # CROP_SIZE from AUTH hydra config
         ignore_label: int = 255,
         mean_rgb: List[float] = [0.485, 0.456, 0.406],
@@ -53,13 +54,20 @@ class FireDataset:
             if not self.files:
                 raise ValueError(f"No {modality} samples in {list_file}")
 
-        # remove samples without fire to get more meaningful prototypes
+        # Drop images with too little fire to get meaningful prototypes: an image
+        # with no (or almost no) fire yields a near-zero concept vector that adds
+        # noise to the GMM rather than signal. require_fire is the >0 case;
+        # min_fire_coverage tightens that to a fraction of the labelled pixels.
         self.require_fire = require_fire
-        if require_fire:
-            keep = self._fire_flags(list_file, modality)
-            self.files = [f for f, has in zip(self.files, keep) if has]
+        self.min_fire_coverage = min_fire_coverage
+        if require_fire or min_fire_coverage > 0:
+            threshold = max(0.0, min_fire_coverage)
+            coverage = self._fire_coverage(list_file, modality)
+            self.files = [f for f, c in zip(self.files, coverage) if c > threshold]
             if not self.files:
-                raise ValueError(f"No sample with fire in {list_file}")
+                raise ValueError(
+                    f"No sample with fire coverage > {threshold:.4f} in {list_file}"
+                )
 
     def __len__(self):
         return len(self.files)
@@ -71,25 +79,31 @@ class FireDataset:
             entry = entry[len(prefix):]
         return os.path.join(self.root, entry)
 
-    def _fire_flags(self, list_file: str, modality: str) -> List[bool]:
-        cache = Path(self.root) / f".fire_flags_{Path(list_file).stem}_{modality}.json"
+    def _fire_coverage(self, list_file: str, modality: str) -> List[float]:
+        """Fraction of labelled pixels that are fire, per file, at native resolution.
+
+        Cached as fractions rather than booleans so any threshold reuses one cache.
+        Uses the same `> 0.1` rule as load_sample, so coverage > 0 is exactly the
+        old require_fire condition.
+        """
+        cache = Path(self.root) / f".fire_coverage_{Path(list_file).stem}_{modality}.json"
         if cache.is_file():
             cached = json.loads(cache.read_text())
             if cached.get("files") == self.files:
-                return cached["flags"]
+                return cached["coverage"]
 
-        flags = []
+        coverage = []
         for entry in self.files:
             label_path = self._resolve(
                 entry.replace("XXX", "gt").replace(".jpg", ".png").replace(".JPG", ".png")
             )
             label = np.asarray(Image.open(label_path).convert("L"))
-            flags.append(bool((label > 0.1).any()))
+            coverage.append(float((label > 0.1).sum()) / label.size)
         try:
-            cache.write_text(json.dumps({"files": self.files, "flags": flags}))
+            cache.write_text(json.dumps({"files": self.files, "coverage": coverage}))
         except OSError:
             pass
-        return flags
+        return coverage
 
     def _has_variant(self, entry: str, variant: str) -> bool:
         base, _ = os.path.splitext(self._resolve(entry.replace("XXX", variant)))

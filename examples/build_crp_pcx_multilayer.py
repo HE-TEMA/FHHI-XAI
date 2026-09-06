@@ -136,6 +136,10 @@ def main():
                         help="fire only: keep images whose mask has no fire. They "
                              "produce all-zero concept vectors and capture a whole "
                              "GMM component, so they are dropped by default.")
+    parser.add_argument("--min-fire-coverage", type=float, default=0.0,
+                        help="fire only: keep only images whose mask has more than "
+                             "this fraction of fire pixels (e.g. 0.03 for 3%%). "
+                             "Tightens the default >0 filter; ignored with --keep-empty.")
     parser.add_argument("--skip-crp", action="store_true")
     parser.add_argument("--skip-pcx", action="store_true")
     args = parser.parse_args()
@@ -158,7 +162,8 @@ def main():
     model = get_pidnet(device=device, ckpt_path=str(checkpoint),
                        classes=classes, in_channels=in_channels).eval()
 
-    fire_extra = ({"modality": args.modality, "require_fire": not args.keep_empty}
+    fire_extra = ({"modality": args.modality, "require_fire": not args.keep_empty,
+                   "min_fire_coverage": 0.0 if args.keep_empty else args.min_fire_coverage}
              if args.dataset == "fire" else {})
     dataset = build_dataset(args.dataset, data_root, **fire_extra)
     if args.limit is not None:
@@ -167,7 +172,8 @@ def main():
     print(f"task={args.dataset} device={device} images={len(dataset)} "
           f"layers={len(args.layers)} in_channels={in_channels} classes={classes} "
           f"class_id={class_id}"
-          + (f" modality={args.modality} require_fire={not args.keep_empty}" if fire_extra else ""))
+          + (f" modality={args.modality} require_fire={not args.keep_empty}"
+             f" min_fire_coverage={fire_extra['min_fire_coverage']}" if fire_extra else ""))
     for layer in args.layers:
         print(f"  - {layer}")
 
