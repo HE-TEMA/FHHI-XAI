@@ -144,6 +144,7 @@ def run_analysis(
     class_id=1,
     use_canonizer=True,
     record_layers=None,
+    layer_chunk_size=1,
 ):
     canonizers = [CANONIZERS[model_name]()] if use_canonizer else []
     composite = COMPOSITES[model_name](canonizers=canonizers)
@@ -179,7 +180,13 @@ def run_analysis(
             f"{len(layer_names)} layer(s): {layer_names}"
         )
     if model_name == "pidnet" and use_canonizer:
-        layer_names = _extend_pidnet_canonized_layer_names(layer_names)
+        # Older PIDNet wrappers exposed ``*.sequential.*`` aliases. Do not add
+        # aliases that are absent from the current model: CRP would warn and
+        # perform extra forward/backward passes that can never produce banks.
+        layer_names = [
+            layer for layer in _extend_pidnet_canonized_layer_names(layer_names)
+            if layer in available_layer_names
+        ]
 
     attribution = ATTRIBUTORS[model_name](model)
     layer_map = {layer: cc for layer in layer_names}
@@ -206,5 +213,5 @@ def run_analysis(
         dataset_len,
         batch_size=1,
         checkpoint=100,
-        layer_chunk_size=4,
+        layer_chunk_size=layer_chunk_size,
     )

@@ -1,10 +1,12 @@
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
+import cv2
 from PIL import Image
 
 from src.datasets.base_dataset import BaseDataset
@@ -20,13 +22,17 @@ def _natural_path_key(path):
 
 class FloodDataset(BaseDataset):
     """
-    Flood segmentation dataset with the same preprocessing as general_flood_v3
-    (BaseDataset pipeline), but files are discovered by scanning directories
-    instead of reading a list file.
+    PIDNet flood dataset for CRP/PCX.
+
+    The deterministic path exactly matches General_Flood_v4 evaluation: RGB,
+    resize to (720, 1280), scale by 1/255, ImageNet normalization, and exact
+    RGB mask conversion. ``transform(image)`` applies that complete pipeline
+    to external images and ``__getitem__`` returns (image, label) tensors.
     """
 
     class_names = ["background", "flood"]
     color_list = [[0, 0, 0], [1, 1, 1]]
+    _coverage_cache = {}
 
     @staticmethod
     def _default_transform(image):
@@ -67,9 +73,9 @@ class FloodDataset(BaseDataset):
         # optional transform argument kept for API compatibility (not used here)
         transform=None,
         num_classes: int = 2,
-        multi_scale: bool = True,
-        flip: bool = True,
-        ignore_label: int = -1,
+        multi_scale: bool = False,
+        flip: bool = False,
+        ignore_label: int = 255,
         base_size: int = 2048,
         crop_size: Tuple[int, int] = (720, 1280),
         scale_factor: int = 16,
@@ -80,6 +86,7 @@ class FloodDataset(BaseDataset):
         strict_pairing: bool = False,
         mask_suffix_patterns: Optional[List[str]] = None,
         list_path: Optional[str] = None,
+        min_flood_coverage: Optional[float] = None,
     ):
         # Accept either `root` or `root_dir` for compatibility with examples
         if root is None and root_dir is not None:
@@ -92,10 +99,10 @@ class FloodDataset(BaseDataset):
         self.base_root = root
         if split is None:
             split = "train"
-        # allow dataset to live under root/General_Flood_v3 or directly under root
-        self.dataset_root = os.path.join(root, "General_Flood_v3")
-        if not os.path.isdir(self.dataset_root):
-            self.dataset_root = root
+        root_path = Path(root)
+        candidates = [root_path / "General_Flood_v4", root_path / "General_Flood_v3",
+                      root_path / "BRK-data", root_path]
+        self.dataset_root = str(next((p for p in candidates if p.is_dir()), root_path))
 
         self.image_dir = os.path.join(self.dataset_root, "RGB", split, "JPEG")
         self.mask_dir = os.path.join(self.dataset_root, "annotations", split, "JPEG")
@@ -105,16 +112,21 @@ class FloodDataset(BaseDataset):
         self.flip = flip
         self.bd_dilate_size = bd_dilate_size
         self.return_or_dims = return_or_dims
-        # Keep compatibility with callers expecting dataset.transform(image)
-        self.transform = transform if transform is not None else self._default_transform
+        self.user_transform = transform
+        # External images used by PCX must receive the full model preprocessing.
+        self.transform = self.preprocess_image
 
         # filename alignment
         self.strict_pairing = strict_pairing
         self.mask_suffix_patterns = mask_suffix_patterns or [
             r"_mask$",
+            r"_masks$",
             r"-mask$",
+            r"-masks$",
             r"_label$",
+            r"_labels$",
             r"-label$",
+            r"-labels$",
             r"_gt$",
             r"-gt$",
             r"_ann$",
@@ -123,6 +135,7 @@ class FloodDataset(BaseDataset):
             r"Ids_?$",
         ]
         self._mask_suffix_re = re.compile("|".join(self.mask_suffix_patterns), flags=re.IGNORECASE)
+        self._image_suffix_re = re.compile(r"(?:_imgs?|[-]imgs?)$", flags=re.IGNORECASE)
 
         self.list_path = list_path
 
@@ -131,7 +144,39 @@ class FloodDataset(BaseDataset):
             self.files = self._files_from_list(self.list_path)
         else:
             self.files = self._scan_and_pair()
+        self.min_flood_coverage = min_flood_coverage
+        if min_flood_coverage is not None:
+            self.files = self._filter_by_flood_coverage(min_flood_coverage)
         self.class_weights = None
+
+    def _filter_by_flood_coverage(self, threshold):
+        """Keep masks whose exact class-1 color covers more than threshold."""
+        threshold = float(threshold)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("min_flood_coverage must be between 0 and 1")
+        selected = []
+        def measure(item):
+            path = str(Path(item["label"]).resolve())
+            coverage = self._coverage_cache.get(path)
+            if coverage is None:
+                with Image.open(item["label"]) as source:
+                    mask = source.convert("RGB")
+                    colors = mask.getcolors(maxcolors=256)
+                    if colors is not None:
+                        flood_pixels = sum(n for n, color in colors if color == (1, 1, 1))
+                        coverage = flood_pixels / float(mask.width * mask.height)
+                    else:
+                        array = np.asarray(mask)
+                        coverage = float(np.mean(np.all(array == (1, 1, 1), axis=2)))
+                self._coverage_cache[path] = coverage
+            return item, coverage
+
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(self.files)))) as pool:
+            measured = pool.map(measure, self.files)
+            for item, coverage in measured:
+                if coverage > threshold:
+                    selected.append({**item, "flood_coverage": coverage})
+        return selected
 
     # pairing helpers
     def _stem_no_ext(self, p: Path) -> str:
@@ -140,6 +185,9 @@ class FloodDataset(BaseDataset):
     def _norm_mask_stem(self, s: str) -> str:
         s2 = self._mask_suffix_re.sub("", s)
         return s2.rstrip("_")
+
+    def _norm_image_stem(self, s: str) -> str:
+        return self._image_suffix_re.sub("", s).rstrip("_")
 
     def _scan_and_pair(self):
         img_exts = (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG")
@@ -156,7 +204,7 @@ class FloodDataset(BaseDataset):
 
         img_groups = {}
         for p in image_files_all:
-            k = self._stem_no_ext(p)
+            k = self._stem_no_ext(p) if self.strict_pairing else self._norm_image_stem(self._stem_no_ext(p))
             img_groups.setdefault(k, []).append(p)
         for k in list(img_groups.keys()):
             img_groups[k].sort(key=_natural_path_key)
@@ -234,10 +282,10 @@ class FloodDataset(BaseDataset):
         return len(self.files)
 
     def color2label(self, color_map):
-        label = np.ones(color_map.shape[:2]) * self.ignore_label
+        label = np.full(color_map.shape[:2], self.ignore_label, dtype=np.int64)
         for i, v in enumerate(self.color_list):
             label[(color_map == v).sum(2) == 3] = i
-        return label.astype(np.uint8)
+        return label
 
     def label2color(self, label):
         color_map = np.zeros(label.shape + (3,))
@@ -245,33 +293,78 @@ class FloodDataset(BaseDataset):
             color_map[label == i] = self.color_list[i]
         return color_map.astype(np.uint8)
 
-    def __getitem__(self, index):
+    @staticmethod
+    def _as_rgb_numpy(image):
+        """Convert PIL/numpy/torch HWC or CHW input to uint8 HWC RGB."""
+        if isinstance(image, Image.Image):
+            return np.asarray(image.convert("RGB"))
+        array = image.detach().cpu().numpy() if torch.is_tensor(image) else np.asarray(image)
+        if array.ndim == 4 and array.shape[0] == 1:
+            array = array[0]
+        if array.ndim == 3 and array.shape[0] in (1, 3) and array.shape[-1] not in (1, 3):
+            array = array.transpose(1, 2, 0)
+        if array.ndim == 2:
+            array = np.repeat(array[..., None], 3, axis=2)
+        if array.ndim != 3 or array.shape[-1] not in (1, 3):
+            raise ValueError(f"Expected an RGB image in HWC or CHW form, got {array.shape}")
+        if array.shape[-1] == 1:
+            array = np.repeat(array, 3, axis=2)
+        if np.issubdtype(array.dtype, np.floating) and array.size and array.max() <= 1.0:
+            array = array * 255.0
+        return np.clip(array, 0, 255).astype(np.uint8)
+
+    def preprocess_image(self, image):
+        """Complete deterministic preprocessing used by PIDNet evaluation."""
+        image = self._as_rgb_numpy(image).astype(np.float32)
+        image = image / 255.0
+        # Keep these operations identical to BaseDataset.input_transform;
+        # even changing constant dtypes can introduce tiny numeric differences.
+        image -= self.mean
+        image /= self.std
+        image = cv2.resize(
+            image, (self.crop_size[1], self.crop_size[0]), interpolation=cv2.INTER_LINEAR
+        )
+        chw = np.ascontiguousarray(image.transpose(2, 0, 1))
+        return torch.from_numpy(chw).float()
+
+    def preprocess_mask(self, mask):
+        """Convert exact RGB colors to IDs and resize using nearest-neighbor."""
+        label = self.color2label(self._as_rgb_numpy(mask))
+        label = cv2.resize(
+            label, (self.crop_size[1], self.crop_size[0]), interpolation=cv2.INTER_NEAREST
+        )
+        return torch.from_numpy(np.ascontiguousarray(label)).long()
+
+    def _load_sample(self, index):
+        """Shared loader used by CRP/PCX and the metrics dataset."""
         item = self.files[index]
         name = item["name"]
-
-        image = Image.open(item["img"]).convert("RGB")
-        image = np.array(image)
+        image = self._as_rgb_numpy(Image.open(item["img"]))
         image_or = image.copy()
         size = image.shape
+        color_map = self._as_rgb_numpy(Image.open(item["label"]))
 
-        color_map = Image.open(item["label"]).convert("RGB")
-        color_map = np.array(color_map)
-        label = self.color2label(color_map)
-
-        image, label, edge = self.gen_sample(
-            image,
-            label,
-            self.multi_scale,
-            self.flip,
-            edge_pad=False,
-            edge_size=self.bd_dilate_size,
-            city=False,
-        )
-
-        if self.return_or_dims:
-            return image.copy(), label.copy(), edge.copy(), np.array(size), image_or, name
+        if self.multi_scale or self.flip:
+            label = self.color2label(color_map)
+            image_np, label_np, edge = self.gen_sample(
+                image, label, self.multi_scale, self.flip, edge_pad=False,
+                edge_size=self.bd_dilate_size, city=False,
+            )
+            image_tensor = torch.from_numpy(np.ascontiguousarray(image_np)).float()
+            label_tensor = torch.from_numpy(np.ascontiguousarray(label_np)).long()
         else:
-            return image.copy(), label.copy(), edge.copy(), np.array(size), name
+            image_tensor = self.preprocess_image(image)
+            label_tensor = self.preprocess_mask(color_map)
+            edge_mask = label_tensor.numpy().astype(np.uint8)
+            edge = cv2.Canny(edge_mask, 0.1, 0.2)
+            kernel = np.ones((self.bd_dilate_size, self.bd_dilate_size), np.uint8)
+            edge = (cv2.dilate(edge, kernel, iterations=1) > 50).astype(np.float32)
+
+        return image_tensor, label_tensor, edge, np.asarray(size), image_or, name
+
+    def __getitem__(self, index):
+        image, label, _, _, _, _ = self._load_sample(index)
+        return image, label
 
     def single_scale_inference(self, config, model, image):
         return self.inference(config, model, image)

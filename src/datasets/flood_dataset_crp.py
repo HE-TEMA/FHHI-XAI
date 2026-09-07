@@ -1,5 +1,6 @@
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -34,6 +35,7 @@ class FloodDataset(BaseDataset):
     class_names = ["background", "flood"]
     # Valid label colors; everything else becomes ignore_label
     color_list = [[0, 0, 0], [1, 1, 1]]
+    _coverage_cache = {}
 
     def __init__(
         self,
@@ -59,6 +61,7 @@ class FloodDataset(BaseDataset):
         strict_pairing: bool = False,
         mask_suffix_patterns: Optional[List[str]] = None,
         list_path: Optional[str] = None,
+        min_flood_coverage: Optional[float] = None,
     ):
         # Accept either `root` or `root_dir` for compatibility with examples
         if root is None and root_dir is not None:
@@ -99,9 +102,13 @@ class FloodDataset(BaseDataset):
         self.strict_pairing = strict_pairing
         self.mask_suffix_patterns = mask_suffix_patterns or [
             r"_mask$",
+            r"_masks$",
             r"-mask$",
+            r"-masks$",
             r"_label$",
+            r"_labels$",
             r"-label$",
+            r"-labels$",
             r"_gt$",
             r"-gt$",
             r"_ann$",
@@ -112,6 +119,7 @@ class FloodDataset(BaseDataset):
         self._mask_suffix_re = re.compile(
             "|".join(self.mask_suffix_patterns), flags=re.IGNORECASE
         )
+        self._image_suffix_re = re.compile(r"(?:_imgs?|[-]imgs?)$", flags=re.IGNORECASE)
 
         # Honor an explicit list file if provided; otherwise rely on directory pairing
         self.list_path = list_path
@@ -121,8 +129,40 @@ class FloodDataset(BaseDataset):
             self.files = self._files_from_list(self.list_path)
         else:
             self.files = self._scan_and_pair()
+        self.min_flood_coverage = min_flood_coverage
+        if min_flood_coverage is not None:
+            self.files = self._filter_by_flood_coverage(min_flood_coverage)
 
         self.class_weights = None
+
+    def _filter_by_flood_coverage(self, threshold):
+        """Keep masks whose exact class-1 color covers more than threshold."""
+        threshold = float(threshold)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("min_flood_coverage must be between 0 and 1")
+        selected = []
+        def measure(item):
+            path = str(Path(item["label"]).resolve())
+            coverage = self._coverage_cache.get(path)
+            if coverage is None:
+                with Image.open(item["label"]) as source:
+                    mask = source.convert("RGB")
+                    colors = mask.getcolors(maxcolors=256)
+                    if colors is not None:
+                        flood_pixels = sum(n for n, color in colors if color == (1, 1, 1))
+                        coverage = flood_pixels / float(mask.width * mask.height)
+                    else:
+                        array = np.asarray(mask)
+                        coverage = float(np.mean(np.all(array == (1, 1, 1), axis=2)))
+                self._coverage_cache[path] = coverage
+            return item, coverage
+
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(self.files)))) as pool:
+            measured = pool.map(measure, self.files)
+            for item, coverage in measured:
+                if coverage > threshold:
+                    selected.append({**item, "flood_coverage": coverage})
+        return selected
 
     # --- pairing helpers -----------------------------------------------------
     def _stem_no_ext(self, p: Path) -> str:
@@ -131,6 +171,9 @@ class FloodDataset(BaseDataset):
     def _norm_mask_stem(self, s: str) -> str:
         s2 = self._mask_suffix_re.sub("", s)
         return s2.rstrip("_")
+
+    def _norm_image_stem(self, s: str) -> str:
+        return self._image_suffix_re.sub("", s).rstrip("_")
 
     def _scan_and_pair(self):
         img_exts = (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG")
@@ -151,7 +194,7 @@ class FloodDataset(BaseDataset):
 
         img_groups = {}
         for p in image_files_all:
-            k = self._stem_no_ext(p)
+            k = self._stem_no_ext(p) if self.strict_pairing else self._norm_image_stem(self._stem_no_ext(p))
             img_groups.setdefault(k, []).append(p)
         for k in list(img_groups.keys()):
             img_groups[k].sort(key=_natural_path_key)
