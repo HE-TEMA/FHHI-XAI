@@ -623,7 +623,12 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     if not os.path.exists(folder + "attributions.npy"):
         raise FileNotFoundError(f"Attributions file not found: {folder + 'attributions.npy'}")
     # load to CPU then to device as needed; keep a CPU copy for sklearn
-    attributions_np = np.load(folder + "attributions.npy")  # numpy on CPU
+    attributions_np = np.nan_to_num(
+        np.load(folder + "attributions.npy").astype(np.float32, copy=False),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )  # finite numpy data on CPU for sklearn
     # torch tensor on device for any tensor ops
     attributions = torch.from_numpy(attributions_np).to(active_device, non_blocking=non_blocking)
 
@@ -658,7 +663,12 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
     # Channel (neuron) relevance on the given layer for this image
     rel_tensor = attr.relevances[layer_name].detach()
-    channel_rels = cc.attribute(rel_tensor, abs_norm=True).detach()
+    channel_rels = torch.nan_to_num(
+        cc.attribute(rel_tensor, abs_norm=True).detach(),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
     attr_heatmap = attr.heatmap.detach().cpu() if hasattr(attr, "heatmap") else None
     pred_tensor = attr.prediction[0].detach() if hasattr(attr, "prediction") else None
 
@@ -674,7 +684,12 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     channel_rels = channel_rels_cpu
 
     # Score the sample against the GMM (sklearn CPU) - convert to CPU numpy
-    channel_rels_np = channel_rels.numpy()
+    channel_rels_np = np.nan_to_num(
+        channel_rels.numpy().astype(np.float32, copy=False),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
     score_sample = gmm.score_samples(channel_rels_np)
     likelihoods = [g_.score_samples(channel_rels_np) for g_ in prototype_gmms]
 
@@ -693,12 +708,17 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     _maybe_empty_cuda_cache(active_device)
 
     # Save CPU-safe GMM data for inspection
+    gmm_output = os.path.join(output_dir_pcx, "gmm_data.pkl")
+    os.makedirs(output_dir_pcx, exist_ok=True)
     try:
-        joblib.dump((attributions.detach().cpu().numpy(), gmm, channel_rels.detach().cpu().numpy(), mean_cpu.numpy()), "examples/output/pcx/gmm_data.pkl")
+        joblib.dump((attributions.detach().cpu().numpy(), gmm, channel_rels.detach().cpu().numpy(), mean_cpu.numpy()), gmm_output)
     except Exception:
         # fallback: save only plain things
         try:
-            joblib.dump((attributions.detach().cpu(), channel_rels.detach().cpu(), mean_cpu), "examples/output/pcx/gmm_data_fallback.pkl")
+            joblib.dump(
+                (attributions.detach().cpu(), channel_rels.detach().cpu(), mean_cpu),
+                os.path.join(output_dir_pcx, "gmm_data_fallback.pkl"),
+            )
         except Exception:
             pass
     del attributions
@@ -1217,7 +1237,12 @@ def compute_outlier_scores(model_name, model, dataset, layer_name="decoder.cente
     if not os.path.exists(folder + "attributions.npy"):
         raise FileNotFoundError(f"Attributions file not found: {folder + 'attributions.npy'}")
 
-    attributions_np = np.load(folder + "attributions.npy")
+    attributions_np = np.nan_to_num(
+        np.load(folder + "attributions.npy").astype(np.float32, copy=False),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
     attributions = torch.from_numpy(attributions_np).to(active_device)
 
     # Refit GMM so outlier scores reflect latest statistics

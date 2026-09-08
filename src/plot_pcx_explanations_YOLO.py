@@ -176,7 +176,12 @@ def plot_one_image_pcx_explanation(
 
     # Loading relevances for this layer
     folder = f"{output_dir_pcx}/{layer_name}/"
-    attributions = torch.from_numpy(np.load(folder + f"attributions_{class_id}.npy"))
+    attributions = torch.from_numpy(np.nan_to_num(
+        np.load(folder + f"attributions_{class_id}.npy").astype(np.float32, copy=False),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    ))
 
     meta_path = os.path.join(folder, f"meta_class_{class_id}.json")
     if os.path.exists(meta_path):
@@ -264,7 +269,12 @@ def plot_one_image_pcx_explanation(
         )
 
     # Channel (neuron) relevance on the given layer for this image
-    channel_rels = cc.attribute(attr.relevances[layer_name], abs_norm=True)
+    channel_rels = torch.nan_to_num(
+        cc.attribute(attr.relevances[layer_name], abs_norm=True),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
 
     # --- sample fit (mixture) ---
     score_sample = gmm.score_samples(channel_rels.detach().cpu())  # shape (1,)

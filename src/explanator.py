@@ -131,6 +131,32 @@ class Explanator:
             "FIRE_REF_IMAGES_DIR",
             os.path.join(self.project_root, "output", "ref_imgs_fire"),
         )
+        # Keep the service on exactly the same flood checkpoint, sample subset,
+        # CRP statistics and PCX banks as examples/pidnet_BRK.ipynb.  Every path
+        # can be overridden when the assets are mounted elsewhere in Docker.
+        self.flood_checkpoint = os.environ.get(
+            "FLOOD_CHECKPOINT",
+            os.path.join(self.project_root, "models", "flood_model_brk2.pt"),
+        )
+        self.flood_data_root = os.environ.get(
+            "FLOOD_DATA_ROOT",
+            os.path.join(self.project_root, "data", "BRK", "flood_segmentation"),
+        )
+        self.flood_crp_dir = os.environ.get(
+            "FLOOD_CRP_DIR",
+            os.path.join(self.project_root, "examples", "output", "crp", "CRP_BRK2"),
+        )
+        self.flood_pcx_dir = os.environ.get(
+            "FLOOD_PCX_DIR",
+            os.path.join(self.project_root, "examples", "output", "pcx", "PCX-BRK2"),
+        )
+        self.flood_ref_images_dir = os.environ.get(
+            "FLOOD_REF_IMAGES_DIR",
+            os.path.join(self.project_root, "examples", "new-ref-img-BRK-FLOOD10-ALL"),
+        )
+        self.flood_layer = os.environ.get("FLOOD_PCX_LAYER", "layer5.0.conv1")
+        self.flood_split = os.environ.get("FLOOD_DATA_SPLIT", "train")
+        self.flood_min_coverage = float(os.environ.get("FLOOD_MIN_COVERAGE", "0.10"))
 
         self.kpi_mirror_roots = []
         mirror_root = "/home/heydari/Jawher/FHHI-XAI"
@@ -458,9 +484,17 @@ class Explanator:
     def flood_model(self):
         if self._flood_model is None:
             log_cuda_memory(self.logger, "BEFORE LOADING FLOOD MODEL")
-            model_name = "pidnet"
-            # flood_model_path = os.path.join(self.project_root, "models", "flood_s_best_pidnet_modified.pt")
-            self._flood_model = get_model(model_name=model_name)
+            if not os.path.isfile(self.flood_checkpoint):
+                raise FileNotFoundError(
+                    f"Flood checkpoint not found: {self.flood_checkpoint}. "
+                    "Set FLOOD_CHECKPOINT to the mounted checkpoint path."
+                )
+            self._flood_model = get_model(
+                model_name="pidnet",
+                ckpt_path=self.flood_checkpoint,
+                classes=2,
+                device=self.device,
+            )
             self._flood_model.eval()
             log_cuda_memory(self.logger, "AFTER LOADING FLOOD MODEL")
         return self._flood_model
@@ -468,16 +502,60 @@ class Explanator:
     @property
     def flood_dataset(self):
         if self._flood_dataset is None:
-            flood_data_path = os.path.join(self.project_root, "data", "General_Flood_v3")
-
-            target_dtype = self.dtype
-            transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: x.to(dtype=target_dtype) if isinstance(x, torch.Tensor) else x),
-            ])
-
-            self._flood_dataset = FloodDataset(root_dir=flood_data_path, split="train", transform=transform)
+            if not os.path.isdir(self.flood_data_root):
+                raise FileNotFoundError(
+                    f"Flood dataset not found: {self.flood_data_root}. "
+                    "Set FLOOD_DATA_ROOT to the mounted flood_segmentation directory."
+                )
+            self._flood_dataset = FloodDataset(
+                root_dir=self.flood_data_root,
+                split=self.flood_split,
+                min_flood_coverage=self.flood_min_coverage,
+            )
+            self.logger.info(
+                "Loaded flood dataset: root=%s split=%s min_coverage=%.3f samples=%d",
+                self.flood_data_root,
+                self.flood_split,
+                self.flood_min_coverage,
+                len(self._flood_dataset),
+            )
         return self._flood_dataset
+
+    def _validate_flood_explanation_assets(self):
+        """Fail early when a container mount points at mismatched/missing banks."""
+        attribution_file = os.path.join(
+            self.flood_pcx_dir, self.flood_layer, "attributions.npy"
+        )
+        crp_file = os.path.join(
+            self.flood_crp_dir,
+            "RelMax_sum_normed",
+            f"{self.flood_layer}_data.npy",
+        )
+        missing = [path for path in (attribution_file, crp_file) if not os.path.isfile(path)]
+        if missing:
+            raise FileNotFoundError(
+                "Missing flood explanation asset(s): " + ", ".join(missing) +
+                ". Set FLOOD_PCX_DIR/FLOOD_CRP_DIR/FLOOD_PCX_LAYER to the "
+                "matching notebook artifacts."
+            )
+        bank = np.load(attribution_file, mmap_mode="r")
+        expected_samples = len(self.flood_dataset)
+        if bank.ndim != 2 or bank.shape[0] != expected_samples:
+            raise ValueError(
+                f"Flood PCX bank {attribution_file} has shape {bank.shape}, but "
+                f"the configured dataset has {expected_samples} samples. Use banks "
+                "generated from the same split and FLOOD_MIN_COVERAGE setting."
+            )
+        layer = dict(self.flood_model.named_modules()).get(self.flood_layer)
+        if layer is None:
+            raise ValueError(f"Flood PCX layer does not exist in the model: {self.flood_layer}")
+        output_channels = getattr(layer, "out_channels", None)
+        if output_channels is not None and bank.shape[1] != output_channels:
+            raise ValueError(
+                f"Flood PCX bank width {bank.shape[1]} does not match "
+                f"{self.flood_layer} output channels {output_channels}."
+            )
+        os.makedirs(self.flood_ref_images_dir, exist_ok=True)
 
     def explain_flood_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray, bm_id, uav_id, flight_number, alert_ref):
         """Generate flood segmentation explanation using PCX."""
@@ -490,23 +568,24 @@ class Explanator:
         n_refimgs = 12
         model_name = "pidnet"
         num_prototypes = 2
-        output_dir_pcx = "output/pcx/pidnet_flood/"
-        output_dir_crp = "output/crp/pidnet_flood/"
-        ref_imgs_path = "output/ref_imgs_pidnet/"
-        # layer_names = get_layer_names(self.flood_model, [torch.nn.Conv2d])
-        layer_name = 'layer5.0.conv1'
-        print(layer_name)
+        output_dir_pcx = self.flood_pcx_dir
+        output_dir_crp = self.flood_crp_dir
+        ref_imgs_path = self.flood_ref_images_dir
+        layer_name = self.flood_layer
+        self._validate_flood_explanation_assets()
+        self.logger.info("Flood PCX layer: %s", layer_name)
         # Apply transform to the input test image
         log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
         image_tensor = self.flood_dataset.transform(image)
-        image_tensor = image_tensor.to(self.device, non_blocking=True)
+        model_device = next(self.flood_model.parameters()).device
+        image_tensor = image_tensor.to(model_device, non_blocking=model_device.type == "cuda")
 
         log_cuda_memory(self.logger, "AFTER IMAGE TRANSFORM")
 
-        print("Shape after batch dimension:", image_tensor.shape)
+        self.logger.debug("Flood input tensor shape: %s", tuple(image_tensor.shape))
         self.flood_model.eval()
 
-        with timed_section(self.device) as prediction_timer:
+        with timed_section(model_device) as prediction_timer:
             with torch.no_grad():
                 _ = self.flood_model(image_tensor.unsqueeze(0))
         prediction_time_s = prediction_timer.elapsed_s
@@ -527,10 +606,14 @@ class Explanator:
                 ref_imgs_path=ref_imgs_path,
                 output_dir_crp=output_dir_crp,
                 output_dir_pcx=output_dir_pcx,
-                precision="autocast_fp16" if (self.device == "cuda" and torch.cuda.is_available()) else "fp32",
+                device=model_device,
+                # Match the notebook and CRP/PCX-bank generation numerics.
+                # PIDNet relevance propagation can produce non-finite values
+                # under autocast even when ordinary inference is stable.
+                precision="fp32",
             )
         except Exception as exc:
-            if not (_is_cuda_oom(exc) and self.device == "cuda" and torch.cuda.is_available()):
+            if not (_is_cuda_oom(exc) and model_device.type == "cuda"):
                 raise
             self.logger.warning("Flood explanation hit CUDA OOM; retrying on CPU: %s", exc)
             gc.collect()

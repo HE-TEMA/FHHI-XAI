@@ -304,10 +304,29 @@ def post_data():
         src_image_filename = entity["filename"]["value"]
         src_image_bucket = entity["bucket"]["value"]
         
-        # configure which entities to explain based on environment variable
-        entities_to_explain = os.environ.get(
-            'ENTITIES_TO_EXPLAIN', 'PersonVehicleDetection'
-        ).split(',')
+        # RQ is FIFO and the deployment uses one worker, so this list also
+        # controls execution order. Preserve order, trim whitespace and avoid
+        # accidentally running the same explanation twice.
+        configured_entities = os.environ.get(
+            'ENTITIES_TO_EXPLAIN',
+            'FloodSegmentation,PersonVehicleDetection',
+        )
+        entities_to_explain = list(dict.fromkeys(
+            item.strip() for item in configured_entities.split(',') if item.strip()
+        ))
+        if not entities_to_explain:
+            raise ValueError("ENTITIES_TO_EXPLAIN must contain at least one entity type")
+        unsupported_entities = [
+            item for item in entities_to_explain
+            if item not in explanator.entity_handlers
+            or not callable(explanator.entity_handlers[item])
+        ]
+        if unsupported_entities:
+            raise ValueError(
+                "Unsupported ENTITIES_TO_EXPLAIN value(s): "
+                + ", ".join(unsupported_entities)
+            )
+        app.logger.info("Explanation queue order: %s", entities_to_explain)
         
         task_ids = []
         for entity_type in entities_to_explain:
@@ -346,7 +365,8 @@ def post_data():
         
         return jsonify({
             'message': 'Task queued successfully',
-            'task_ids': task_ids
+            'task_ids': task_ids,
+            'explanation_order': entities_to_explain,
         }), 202  # Return 202 Accepted for async processing
         
     except Exception as e:

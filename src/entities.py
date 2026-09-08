@@ -15,7 +15,7 @@ person_vehicle_detection_explanation_template = {
     },
     "description": {
         "type": "Property",
-        "value": "Explanation created by FHHI (TFA-02) for AUTH (TFA-05) related to person/vehicle detection.explanation_tfa02 9.0 BRK Trial 2026"
+        "value": "Explanation created by FHHI (TFA-02) for AUTH (TFA-05) related to flood segmentation.explanation and person-vehicle detection.explanation_tfa02 9.1 BRK Trial 2026"
     },
     "bucket": {
         "type": "Property",

@@ -1,8 +1,16 @@
-# Remove any existing container with the same name
-#docker rm -f explanation_tfa02 2>/dev/null
-# docker run -p <port_exposed_on_cloud_machine>:<PORT> \
-docker run -p 8080:8080 \
---name explanation_tfa02 \
---runtime=nvidia \
---gpus all \
-explanation_tfa02
+#!/usr/bin/env bash
+set -eu
+
+# Override these without editing the script, for example:
+# HOST_PORT=8081 CONTAINER_NAME=explanation_tfa02_8081 ./run_docker.sh
+HOST_PORT="${HOST_PORT:-8080}"
+CONTAINER_NAME="${CONTAINER_NAME:-explanation_tfa02}"
+ENTITIES_TO_EXPLAIN="${ENTITIES_TO_EXPLAIN:-FloodSegmentation,PersonVehicleDetection}"
+
+docker run --rm \
+  -p "${HOST_PORT}:8080" \
+  --name "${CONTAINER_NAME}" \
+  -e "ENTITIES_TO_EXPLAIN=${ENTITIES_TO_EXPLAIN}" \
+  --runtime=nvidia \
+  --gpus all \
+  explanation_tfa02

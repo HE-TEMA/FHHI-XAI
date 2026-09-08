@@ -588,7 +588,8 @@ Before deployment, confirm:
 
 ## Configure the runtime service
 
-The person/vehicle runtime supports these environment variables:
+The runtime supports these environment variables (all relative defaults are
+resolved from `PROJECT_ROOT`):
 
 | Variable | Default |
 |---|---|
@@ -598,6 +599,15 @@ The person/vehicle runtime supports these environment variables:
 | `PERSON_VEHICLE_PCX_DIR` | current validated PCX directory in `src/explanator.py` |
 | `PERSON_VEHICLE_REF_IMAGES_DIR` | `output/ref_imgs_yolov6_brk_validated` |
 | `PERSON_VEHICLE_MIN_EXPLANATION_CONFIDENCE` | `0.30` |
+| `FLOOD_CHECKPOINT` | `models/flood_model_brk2.pt` |
+| `FLOOD_DATA_ROOT` | `data/BRK/flood_segmentation` |
+| `FLOOD_CRP_DIR` | `examples/output/crp/CRP_BRK2` |
+| `FLOOD_PCX_DIR` | `examples/output/pcx/PCX-BRK2` |
+| `FLOOD_REF_IMAGES_DIR` | `examples/new-ref-img-BRK-FLOOD10-ALL` |
+| `FLOOD_PCX_LAYER` | `layer5.0.conv1` |
+| `FLOOD_DATA_SPLIT` | `train` |
+| `FLOOD_MIN_COVERAGE` | `0.10` |
+| `ENTITIES_TO_EXPLAIN` | `FloodSegmentation,PersonVehicleDetection` (left-to-right queue order) |
 | `PORT` | `8080` |
 | `BASE_PATH` | `/tfa02` |
 | `REDIS_HOST` | `localhost` |
@@ -614,6 +624,20 @@ export PERSON_VEHICLE_DATA_ROOT="$PWD/data/BRK/person_vehicle_detection"
 export PERSON_VEHICLE_CRP_DIR="$PWD/output/crp/yolo_person_car_full"
 export PERSON_VEHICLE_PCX_DIR="$PWD/output/pcx/from_yolo_person_car_full"
 export PERSON_VEHICLE_REF_IMAGES_DIR="$PWD/output/ref_imgs_yolo_person_car_full"
+```
+
+Select explanations and their order with a comma-separated list. Person and
+car are produced together by `PersonVehicleDetection`:
+
+```bash
+# Flood first, then person/car (default)
+ENTITIES_TO_EXPLAIN=FloodSegmentation,PersonVehicleDetection ./run_docker.sh
+
+# Flood only
+ENTITIES_TO_EXPLAIN=FloodSegmentation ./run_docker.sh
+
+# Person/car first, then flood
+ENTITIES_TO_EXPLAIN=PersonVehicleDetection,FloodSegmentation ./run_docker.sh
 ```
 
 ## Run and test locally
@@ -701,7 +725,13 @@ docker run --rm \
   -e PERSON_VEHICLE_CRP_DIR=/explanation-data/output/crp/yolo_person_car_full \
   -e PERSON_VEHICLE_PCX_DIR=/explanation-data/output/pcx/from_yolo_person_car_full \
   -e PERSON_VEHICLE_REF_IMAGES_DIR=/explanation-data/output/ref_imgs_yolo_person_car_full \
-  -v /absolute/host/explanation-data:/explanation-data:ro \
+  -e FLOOD_CHECKPOINT=/explanation-data/models/flood_model_brk2.pt \
+  -e FLOOD_DATA_ROOT=/explanation-data/data/flood_segmentation \
+  -e FLOOD_CRP_DIR=/explanation-data/output/crp/CRP_BRK2 \
+  -e FLOOD_PCX_DIR=/explanation-data/output/pcx/PCX-BRK2 \
+  -e FLOOD_REF_IMAGES_DIR=/explanation-data/output/ref-images/flood \
+  -e ENTITIES_TO_EXPLAIN=FloodSegmentation,PersonVehicleDetection \
+  -v /absolute/host/explanation-data:/explanation-data:rw \
   explanation_tfa02
 ```
 
@@ -731,4 +761,3 @@ To publish, retain the GHCR steps in the original README above, use an immutable
 - **CUDA out of memory:** use one CRP layer, keep batch size at one, reduce displayed references/concepts for inference, or use the implemented CPU fallback where available.
 - **New image produces no explanation:** the detector may have no valid boxes or all confidence values may be below `PERSON_VEHICLE_MIN_EXPLANATION_CONFIDENCE`.
 - **Notebook imports fail:** launch Jupyter from the repository root and replace old absolute paths in the first configuration cell.
- 

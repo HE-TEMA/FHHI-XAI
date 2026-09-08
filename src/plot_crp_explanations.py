@@ -832,6 +832,7 @@ def plot_one_image_explanation_old(model_name, model, img, dataset, class_id, la
 def fig_to_array(fig):
     """Convert a matplotlib figure to a numpy array."""
     fig.canvas.draw()
-    data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    return data
+    # Matplotlib 3.10 removed FigureCanvasAgg.tostring_rgb(). buffer_rgba()
+    # is supported by both the older and newer versions used by this project.
+    rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
+    return np.ascontiguousarray(rgba[..., :3])
