@@ -457,18 +457,34 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12,
     os.makedirs(os.path.dirname(ref_imgs_save_path), exist_ok=True)
 
     ref_imgs = {}
-    missing_keys = list(map(str, topk_ind))
+
+    def _store(group, images_list):
+        """Write the first n_ref PIL images into an h5 group; return the kept ones."""
+        kept = []
+        for idx, image in enumerate(images_list[:n_ref]):
+            if isinstance(image, Image.Image):
+                group.create_dataset(str(idx), data=np.array(image))
+                kept.append(image)
+            else:
+                # This fires only for a genuinely non-PIL entry, not once per call.
+                print(f"Warning: Item '{idx}' in key '{group.name}' is not a PIL image and will not be saved.")
+        return kept
 
     if os.path.exists(ref_imgs_save_path):
         with h5py.File(ref_imgs_save_path, "a") as f:
-            existing_keys = set(f.keys())
-            missing_keys = [str(k) for k in topk_ind if str(k) not in existing_keys]
+            # A concept counts as cached only if it already holds at least n_ref
+            # images. The cache is keyed by concept id alone, so a group written by
+            # an earlier run with a smaller n_ref must be recomputed rather than
+            # silently returned short (which left blank tiles in the grid).
+            missing_keys = [
+                str(k) for k in topk_ind
+                if str(k) not in f or len(f[str(k)].keys()) < n_ref
+            ]
 
             for k in topk_ind:
                 str_k = str(k)
-                if str_k in f:
+                if str_k in f and str_k not in missing_keys:
                     group = f[str_k]
-                    # read stored PIL images from dataset arrays
                     ref_imgs[int(str_k)] = [Image.fromarray(group[str(idx)][:]) for idx in sorted(group.keys(), key=int)]
 
             if missing_keys:
@@ -484,16 +500,10 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12,
                     use_rf=use_rf,
                 )
                 for key, images_list in new_refs.items():
+                    if str(key) in f:      # drop the stale, too-short group first
+                        del f[str(key)]
                     group = f.create_group(str(key))
-                    assert len(images_list) >= n_ref
-                    ref_imgs[key] = []
-                    for idx, image in enumerate(images_list[:n_ref]):
-                        if isinstance(image, Image.Image):
-                            arr = np.array(image)
-                            group.create_dataset(str(idx), data=arr)
-                            ref_imgs[key].append(image)
-                    else:
-                        print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
+                    ref_imgs[key] = _store(group, images_list)
     else:
         print("Reference image file does not exist, calculating all.")
         ref_imgs = _call_get_max_reference(
@@ -509,13 +519,7 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12,
         with h5py.File(ref_imgs_save_path, "w") as f:
             for key, images_list in ref_imgs.items():
                 group = f.create_group(str(key))
-                assert len(images_list) >= n_ref
-                for idx, image in enumerate(images_list[:n_ref]):
-                    if isinstance(image, Image.Image):
-                        arr = np.array(image)
-                        group.create_dataset(str(idx), data=arr)
-                    else:
-                        print(f"Warning: Item '{idx}' in key '{key}' is not a PIL image and will not be saved.")
+                ref_imgs[key] = _store(group, images_list)
 
     return ref_imgs
 

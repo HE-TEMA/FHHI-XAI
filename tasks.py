@@ -96,7 +96,7 @@ def process_image_task(entity_type, image_bucket, image_filename, task_id, bm_id
         orion_response = update_entity(explanation_entity)
         
         # Update job status with results
-        if orion_response.status_code == 204:
+        if orion_response.status_code in (201, 204):
             job_status = {
                 'status': 'completed',
                 'progress': 100,

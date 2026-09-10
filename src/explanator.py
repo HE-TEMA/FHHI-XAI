@@ -325,7 +325,7 @@ class Explanator:
         # Parameters
         class_id = 1  # Fire class ID
         n_concepts = 3
-        n_refimgs = 12
+        n_refimgs = 6
         model_name = "pidnet"
         num_prototypes = 8
         output_dir_pcx = self.fire_pcx_dir

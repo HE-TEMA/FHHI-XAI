@@ -5,7 +5,11 @@
 FROM python:3.8.12-slim AS builder
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Debian bullseye-security is EOL: its metadata is expired and its .deb files are
+# 404 on the live mirror. Drop that source and resolve from bullseye/main, which
+# is still served; Check-Valid-Until guards main's own metadata expiring later.
+RUN sed -i '/security.debian.org/d' /etc/apt/sources.list && \
+    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends \
     build-essential \
     # Therse two are for h5py
     pkg-config \
@@ -29,12 +33,16 @@ ENV PORT=8080 \
     DEBUG=False \
     PROCESSING_UNIT=gpu \
     REDIS_HOST=localhost \
-    REDIS_PORT=6379
+    REDIS_PORT=6379 \
+    ENTITIES_TO_EXPLAIN=FireSegmentation
 
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Debian bullseye-security is EOL (expired metadata + 404 .debs); drop that
+# source and resolve from bullseye/main.
+RUN sed -i '/security.debian.org/d' /etc/apt/sources.list && \
+    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends \
     redis-server \
     supervisor \
     ffmpeg \

@@ -14,8 +14,29 @@ References
 plots
 KPIs.pdf
 
-output_originaldocker pull ghcr.io/he-tema/explanation_tfa02:6.3
+output_original
 output_BRK
+
+# Include fire and burnt artifacts; exclude other large datasets and caches.
+output
+!output/crp/pidnet_fire_sweep
+!output/pcx/pidnet_fire_sweep
+!output/ref_imgs_fire_rf
+
+data
+!data/FireSeg
+
+models
+!models/firemodel_pidnet_multi.pth
 
 *.log
 *.tmp
+burnt_segmentation.zip
+
+# Burnt artifacts are intentionally NOT baked into the fire image; re-add these
+# !includes when building the burnt image (ENTITIES_TO_EXPLAIN=BurntSegmentation).
+# !data/Segmentation_Blaze
+# !models/pidnet_s_burnt.pt
+# !output/crp/pidnet_burnt_sweep
+# !output/pcx/pidnet_burnt_sweep
+# !output/ref_imgs_burnt_rf
