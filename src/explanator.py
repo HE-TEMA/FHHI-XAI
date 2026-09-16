@@ -157,7 +157,7 @@ class Explanator:
         )
         self.burnt_layer = os.environ.get("BURNT_LAYER", "layer4.0.conv1")
         self.burnt_outlier_percentile = float(
-            os.environ.get("BURNT_OUTLIER_PERCENTILE", "2")
+            os.environ.get("BURNT_OUTLIER_PERCENTILE", "1")
         )
         if not 0 <= self.burnt_outlier_percentile <= 100:
             raise ValueError("BURNT_OUTLIER_PERCENTILE must be between 0 and 100")
@@ -386,9 +386,9 @@ class Explanator:
         # Parameters
         class_id = 1  # Burnt class ID
         n_concepts = 3
-        n_refimgs = 8
+        n_refimgs = 6
         model_name = "pidnet"
-        num_prototypes = 8
+        num_prototypes = 6
         output_dir_pcx = self.burnt_pcx_dir
         output_dir_crp = self.burnt_crp_dir
         ref_imgs_path = burnt_reference_cache(
