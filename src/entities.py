@@ -15,7 +15,7 @@ person_vehicle_detection_explanation_template = {
     },
     "description": {
         "type": "Property",
-        "value": "Explanation created by FHHI (TFA-02) for AUTH (TFA-05) related to flood segmentation.explanation and person-vehicle detection.explanation_tfa02 9.1 BRK Trial 2026"
+        "value": "Explanation created by FHHI (TFA-02) for AUTH (TFA-05) related to smoke segmentation.explanation and person-vehicle detection.explanation_tfa02 9.1 BRK Trial 2026"
     },
     "bucket": {
         "type": "Property",
@@ -139,7 +139,7 @@ flood_segmentation_explanation_template = {
     },
     "description": {
         "type": "Property",
-        "value": "Explanation created by FHHI (TFA-02) for AUTH (TFA-06) related to flood segmentation."
+        "value": "Explanation created by FHHI (TFA-02) for AUTH (TFA-06) related to smoke segmentation."
     },
     "bucket": {
         "type": "Property",
@@ -251,6 +251,21 @@ def get_flood_segmentation_explanation_entity(
 
     # For some reason we need to upload a list of one element, according to AUTH example script
     return [template]
+
+
+def get_smoke_segmentation_explanation_entity(**kwargs):
+    """Use the segmentation explanation schema with smoke-specific identity."""
+    result = get_flood_segmentation_explanation_entity(**kwargs)
+    entity = result[0]
+    entity["id"] = "urn:ngsi-ld:tema:FHHI:TFA-02:SmokeSegmentationExplanation"
+    entity["type"] = "SmokeSegmentationExplanation"
+    entity["title"]["value"] = "Smoke Segmentation Explanation."
+    entity["description"]["value"] = (
+        "Explanation created by FHHI (TFA-02) for smoke segmentation."
+    )
+    entity["explainsEntity"]["object"] = "urn:ngsi-ld:tema:AUTH:TFA-06:SmokeSegmentation"
+    entity["original_detection"]["value"]["class_categories"] = ["smoke"]
+    return result
 
 
 fire_segmentation_explanation_template = {

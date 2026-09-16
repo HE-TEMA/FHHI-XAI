@@ -19,46 +19,26 @@ examples/*
 examples/output/*
 !examples/output/crp/
 examples/output/crp/*
-!examples/output/crp/CRP_BRK2/
-!examples/output/crp/CRP_BRK2/**
+!examples/output/crp/CRP_SMOKE/
+!examples/output/crp/CRP_SMOKE/**
 !examples/output/pcx/
 examples/output/pcx/*
-!examples/output/pcx/PCX-BRK2/
-!examples/output/pcx/PCX-BRK2/**
-!examples/new-ref-img-BRK-FLOOD10-ALL/
-!examples/new-ref-img-BRK-FLOOD10-ALL/**
+!examples/output/pcx/PCX-SMOKE-ALL/
+!examples/output/pcx/PCX-SMOKE-ALL/**
+!examples/new-ref-img-SMOKE/
+!examples/new-ref-img-SMOKE/**
 
-# Package only the two datasets needed for runtime prototype/reference lookup.
+# Package only smoke images and masks for PCX reference lookup.
 data/*
-!data/BRK/
-data/BRK/*
-!data/BRK/flood_segmentation/
-!data/BRK/flood_segmentation/**
-!data/BRK/person_vehicle_detection/
-!data/BRK/person_vehicle_detection/**
-# The runtime and validated manifests use split="train" only.
-data/BRK/flood_segmentation/RGB/val
-data/BRK/flood_segmentation/annotations/val
-data/BRK/person_vehicle_detection/images/val
-data/BRK/person_vehicle_detection/labels/val
+!data/smoke_segmentation/
+!data/smoke_segmentation/**
 
-# Package only checkpoints selected by src/explanator.py.
+# Package only the smoke checkpoint.
 models/*
-!models/best_ckpt.pt
-!models/flood_model_brk2.pt
+!models/smokemodel_pidnet.pth
 
-# Package only the validated person/vehicle CRP, PCX and reference artifacts.
-output/*
-!output/crp/
-output/crp/*
-!output/crp/yolov6_validated_full_one_layer_20260727_145542/
-!output/crp/yolov6_validated_full_one_layer_20260727_145542/**
-!output/pcx/
-output/pcx/*
-!output/pcx/from_yolov6_validated_full_one_layer_20260727_145542/
-!output/pcx/from_yolov6_validated_full_one_layer_20260727_145542/**
-!output/ref_imgs_yolov6_brk_validated/
-!output/ref_imgs_yolov6_brk_validated/**
+# The service uses the smoke CRP/PCX assets under examples/output only.
+output
 tests
 References
 plots

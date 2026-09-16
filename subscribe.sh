@@ -27,18 +27,6 @@ curl -X POST 'https://orion.tema.digital-enabler.eng.it/ngsi-ld/v1/subscriptions
             "type": "EOBurntArea",
         },
         {
-            "type": "BurntSegmentation"
-        },
-        {
-            "type": "FireSegmentation"
-        },
-        {
-            "type": "FloodSegmentation"
-        },
-        {
-            "type": "PersonVehicleDetection"
-        },
-        {
             "type": "SmokeSegmentation"
         }
     ],
@@ -49,5 +37,3 @@ curl -X POST 'https://orion.tema.digital-enabler.eng.it/ngsi-ld/v1/subscriptions
         }
     }
 }'
-
-

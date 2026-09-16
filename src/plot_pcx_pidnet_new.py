@@ -3,7 +3,6 @@ import sys
 import gc
 import time
 import h5py
-import copy
 import shutil
 import logging
 from typing import Dict, List, Tuple, Optional
@@ -31,7 +30,7 @@ from LCRP.utils.render import vis_opaque_img_border
 #from src.pcx_helper import plot_gmm_umap_2d, plot_gmm_umap_3d, plot_prototype_n_nearest
 
 
-logging.disable(logging.ERROR)
+logging.getLogger("LCRP.utils.crp").setLevel(logging.CRITICAL)
 # -------------------------
 # Small helpers
 # -------------------------
@@ -49,6 +48,17 @@ def _extract_image_tensor_from_sample(sample):
         "Unable to extract an image tensor from the dataset sample; expected "
         "a tensor or a non-empty tuple/list whose first item is a tensor or ndarray."
     )
+
+
+def _predicted_class_mask(prediction, target_hw, class_id=1):
+    """Match segmentation evaluation: resize logits, then take argmax."""
+    logits = prediction[0] if prediction.ndim == 4 else prediction
+    if logits.ndim != 3:
+        raise ValueError(f"Expected [C,H,W] logits, got {tuple(logits.shape)}")
+    logits = F.interpolate(
+        logits.unsqueeze(0), size=target_hw, mode="bilinear", align_corners=True
+    )
+    return (logits.argmax(dim=1)[0] == class_id).detach().cpu()
 
 
 def _layer_candidates(layer: str):
@@ -321,9 +331,11 @@ def plot_pcx_explanations(
     ref_imgs_path: str,
     output_dir_crp: str,
     output_dir_pcx: str,
-    concept_ids: Optional[List[int]] = None):
+    concept_ids: Optional[List[int]] = None,
+    image_tensor: Optional[torch.Tensor] = None):
     print("[plot_pcx_explanations] starting")
-    img = _extract_image_tensor_from_sample(dataset[sample_id])
+    img = (image_tensor if image_tensor is not None
+           else _extract_image_tensor_from_sample(dataset[sample_id]))
     if img.ndim == 4 and img.shape[0] == 1:
         img = img[0]
     print(f"[plot_pcx_explanations] sample_id={sample_id} img.shape={tuple(img.shape)}")
@@ -342,6 +354,7 @@ def plot_pcx_explanations(
         output_dir_crp=output_dir_crp,
         output_dir_pcx=output_dir_pcx,
         concept_ids=concept_ids,
+        external_input=image_tensor is not None,
     )
 
     print("[plot_pcx_explanations] finished")
@@ -361,12 +374,16 @@ def plot_one_image_pcx_explanation(
     output_dir_crp: str,
     output_dir_pcx: str,
     concept_ids: Optional[List[int]] = None,
+    external_input: bool = False,
 ) -> plt.Figure:
     t_start = time.time()
-    device = "cpu"  # keep CPU for sklearn compatibility
+    # CRP forwards/backwards and reference heatmaps belong on the model device.
+    # Only the small NumPy attribution matrix is used by scikit-learn on CPU.
+    device = next(model.parameters()).device
     print(f"[plot_one_image_pcx_explanation] device={device}, layer={layer}")
-
-    model = model.to(device).eval()
+    if device.type == "cpu" and torch.cuda.is_available():
+        print("[plot] model is on CPU although CUDA is available; move it to CUDA before plotting for speed")
+    model = model.eval()
 
     print("[attr] building attribution/composite/visualization")
     attribution = ATTRIBUTORS[model_name](model)
@@ -385,7 +402,7 @@ def plot_one_image_pcx_explanation(
 
     # Attribution on the chosen sample
     print("[attr] computing base attribution")
-    x_copy = copy.deepcopy(x).requires_grad_()
+    x_copy = x.detach().clone().requires_grad_()
     attr = attribution(x_copy, condition, composite, record_layer=_layer_candidates(layer), init_rel=1)
     resolved_layer = _resolve_attr_layer(attr, layer)  # key available in attr.{relevances,activations}
     if resolved_layer != layer:
@@ -399,14 +416,9 @@ def plot_one_image_pcx_explanation(
     heatmap_pil = zimage.imgify(attr.heatmap.detach().cpu(), cmap="bwr", symmetric=True, level=10)
     print("[attr] base heatmap computed")
 
-    # Build binary mask from prediction argmax==1
-    print("[mask] building predicted mask")
-    pred = attr.prediction[0].argmax(dim=0)   # [H,W]
-    mask_bool = (pred == 1).detach().cpu()    # [H,W]
-
     # Determine target size using dataset.reverse_augmentation if available
     try:
-        sample_ = dataset.reverse_augmentation(x[0] + 0)  # [C,H,W]
+        sample_ = dataset.reverse_augmentation(x[0].detach().cpu())  # [C,H,W]
         tgt_hw = (sample_.shape[1], sample_.shape[2])
         print(f"[mask] reverse_augmentation available, target size={tgt_hw}")
     except Exception:
@@ -416,16 +428,33 @@ def plot_one_image_pcx_explanation(
         tgt_hw = (sample_.shape[1], sample_.shape[2])
         print(f"[mask] reverse_augmentation missing, fallback target size={tgt_hw}")
 
-    # Resize mask to target size
-    mask_f = mask_bool.float().unsqueeze(0).unsqueeze(0)  # [1,1,h,w]
-    mask_resized = F.interpolate(mask_f, size=tgt_hw, mode="nearest").bool().squeeze(0).squeeze(0)  # [H,W]
+    # Resize logits before argmax, as in segmentation evaluation.
+    mask_resized = _predicted_class_mask(attr.prediction, tgt_hw)
     print(f"[mask] resized mask -> {tuple(mask_resized.shape)}")
+    with torch.no_grad():
+        direct_prediction = model(x)
+    if isinstance(direct_prediction, (tuple, list)):
+        direct_prediction = direct_prediction[-1]
+    direct_mask = _predicted_class_mask(direct_prediction, tgt_hw)
+    different = int((mask_resized != direct_mask).sum().item())
+    allowed = max(1, int(mask_resized.numel() * 1e-4))
+    if different > allowed:
+        raise RuntimeError(
+            f"PCX and direct PIDNet predictions disagree at {different}/{mask_resized.numel()} "
+            f"pixels (limit {allowed}). "
+            "Check model mode, preprocessing, and checkpoint before interpreting the plot."
+        )
+    if different:
+        print(f"[mask] {different} near-boundary pixels differ after attribution; "
+              "using the direct PIDNet prediction for display")
+    mask_resized = direct_mask
 
     # Channel relevances
     print("[concepts] computing channel relevances")
     channel_rels = ChannelConcept().attribute(attr.relevances[resolved_layer], abs_norm=True)  # [1,C]
-    channel_rels_vec = channel_rels[0]  # [C]
+    channel_rels_vec = channel_rels[0].detach().cpu()  # [C]; GMM/plotting stay on CPU
     print(f"[concepts] channel_rels shape={tuple(channel_rels.shape)}")
+    del attr, channel_rels, x_copy, direct_prediction
 
     # Load attributions matrix for GMM
     resolved_pcx_layer, attr_path = _resolve_pcx_attr_path(output_dir_pcx, resolved_layer)
@@ -441,12 +470,19 @@ def plot_one_image_pcx_explanation(
     print(f"[gmm] attributions shape={attributions_np.shape}")
     if attributions_np.size == 0:
         raise ValueError(f"[gmm] Empty attribution bank for layer '{layer}'. Re-run attribution export first.")
+    if len(attributions_np) != len(dataset):
+        raise ValueError(
+            f"PCX bank has {len(attributions_np)} rows but dataset has {len(dataset)} samples. "
+            "Use the same dataset and ordering used to generate the bank."
+        )
+    bank_sample_indices = np.arange(len(attributions_np))
 
     finite_mask = np.isfinite(attributions_np).all(axis=1)
     if not finite_mask.all():
         bad = int((~finite_mask).sum())
         print(f"[gmm] WARNING: dropping {bad} rows with NaN/Inf values before fitting GMM.")
         attributions_np = attributions_np[finite_mask]
+        bank_sample_indices = bank_sample_indices[finite_mask]
 
     attributions_np = np.nan_to_num(attributions_np, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -460,6 +496,7 @@ def plot_one_image_pcx_explanation(
         dropped = int((~nonzero_mask).sum())
         print(f"[gmm] INFO: dropping {dropped} constant rows from attribution bank.")
         attributions_np = attributions_np[nonzero_mask]
+        bank_sample_indices = bank_sample_indices[nonzero_mask]
 
     # Diverse top concepts
     num_ch = int(channel_rels_vec.numel())
@@ -491,6 +528,7 @@ def plot_one_image_pcx_explanation(
     cond_heatmaps, _, _, _ = attribution(
         x.requires_grad_(), conditions, composite, record_layer=[runtime_layer], exclude_parallel=True
     )
+    cond_heatmaps = cond_heatmaps.detach().cpu()
     attribution.take_prediction = 0
 
     # Reference images
@@ -549,7 +587,7 @@ def plot_one_image_pcx_explanation(
     print("[gmm] finding closest sample to prototype mean")
     attributions_t = torch.from_numpy(attributions_np)  # [N,C]
     dists = (attributions_t - mean[None, :]).pow(2).sum(dim=1)  # [N]
-    closest_idx = int(torch.argmin(dists).item())
+    closest_idx = int(bank_sample_indices[int(torch.argmin(dists).item())])
     print(f"[gmm] closest_idx={closest_idx}")
 
     # Prototype image and cond heatmaps
@@ -558,13 +596,13 @@ def plot_one_image_pcx_explanation(
     print("[proto] computing prototype attributions")
     attr_p = attribution(data_p.requires_grad_(), [{"y": 1}], composite, record_layer=[runtime_layer])
     cond_heatmap_p, _, _, _ = attribution(data_p.requires_grad_(), conditions, composite)
-    proto_heatmap_pil = zimage.imgify(attr_p.heatmap, cmap="bwr", symmetric=True, level=10)
+    cond_heatmap_p = cond_heatmap_p.detach().cpu()
+    proto_heatmap_pil = zimage.imgify(attr_p.heatmap.detach().cpu(), cmap="bwr", symmetric=True, level=10)
 
     # Prototype mask
     print("[proto] building prototype mask")
-    mask_p_bool = (attr_p.prediction[0].argmax(dim=0) == 1).detach().cpu()  # [h,w]
-    mask_p_f = mask_p_bool.float().unsqueeze(0).unsqueeze(0)
-    mask_p_resized = F.interpolate(mask_p_f, size=tgt_hw, mode="nearest").bool().squeeze(0).squeeze(0)
+    mask_p_resized = _predicted_class_mask(attr_p.prediction, tgt_hw)
+    del attr_p, data_p
 
     # Prototype visualization
     pil_p = imgify(fv.get_data_sample(closest_idx, preprocessing=False)[0][0])
@@ -572,8 +610,11 @@ def plot_one_image_pcx_explanation(
     img_prototype_overlay = draw_segmentation_masks(img_p_t, masks=mask_p_resized, alpha=0.2, colors=["red"])
 
     # Input visualization
-    pil_in = imgify(fv.get_data_sample(sample_id, preprocessing=False)[0][0])
-    img_in_t = TF.pil_to_tensor(pil_in)  # [C,H,W]
+    if external_input:
+        img_in_t = sample_.detach().cpu().clamp(0, 255).to(torch.uint8)
+    else:
+        pil_in = imgify(fv.get_data_sample(sample_id, preprocessing=False)[0][0])
+        img_in_t = TF.pil_to_tensor(pil_in)  # [C,H,W]
     img_in_overlay = draw_segmentation_masks(img_in_t, masks=mask_resized, alpha=0.2, colors=["red"])
 
     # -------------------------
@@ -637,7 +678,7 @@ def plot_one_image_pcx_explanation(
                 elif r == 1:
                     ax.set_title("heatmap", fontsize=12, pad=8)
                     if flood_segment_too_small:
-                        _show_message_box(ax, "Flood segment\nis too small")
+                        _show_message_box(ax, "Predicted segment\nis too small")
                     else:
                         ax.imshow(base_heatmap_res)
                 elif r == 2:
@@ -666,7 +707,7 @@ def plot_one_image_pcx_explanation(
                 if concept_rel <= relevance_too_small_thr:
                     _show_message_box(ax, "Relevance is\ntoo small")
                 else:
-                    hm_pil = zimage.imgify(cond_heatmaps[r], symmetric=True, cmap="bwr", level=10)
+                    hm_pil = zimage.imgify(cond_heatmaps[r].detach().cpu(), symmetric=True, cmap="bwr", level=10)
                     hm_res = resize(hm_pil)
                     ax.imshow(hm_res)
                 ax.set_ylabel(f"concept {topk_ind[r]}\n{(topk_rel[r] * 100):.1f}%", fontsize=10, labelpad=8)
@@ -733,7 +774,7 @@ def plot_one_image_pcx_explanation(
                 if proto_concept_rel <= relevance_too_small_thr:
                     _show_message_box(ax, "Relevance is\ntoo small")
                 else:
-                    hm_pil_p = zimage.imgify(cond_heatmap_p[r], symmetric=True, cmap="bwr", level=10)
+                    hm_pil_p = zimage.imgify(cond_heatmap_p[r].detach().cpu(), symmetric=True, cmap="bwr", level=10)
                     ax.imshow(resize(hm_pil_p))
                 ax.yaxis.set_label_position("right")
                 ax.set_ylabel(f"concept {topk_ind[r]}\n{(float(mean[topk_ind[r]]) * 100):.1f}%", fontsize=10, labelpad=8)
@@ -745,7 +786,7 @@ def plot_one_image_pcx_explanation(
                 elif r == 1:
                     ax.set_title("heatmap", fontsize=12, pad=8)
                     if flood_segment_too_small_proto:
-                        _show_message_box(ax, "Flood segment\nis too small")
+                        _show_message_box(ax, "Smoke segment\nis too small")
                     else:
                         ax.imshow(proto_heatmap_res)
                 else:

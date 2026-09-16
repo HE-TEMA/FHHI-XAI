@@ -309,7 +309,7 @@ def post_data():
         # accidentally running the same explanation twice.
         configured_entities = os.environ.get(
             'ENTITIES_TO_EXPLAIN',
-            'FloodSegmentation,PersonVehicleDetection',
+            'SmokeSegmentation',
         )
         entities_to_explain = list(dict.fromkeys(
             item.strip() for item in configured_entities.split(',') if item.strip()
@@ -586,13 +586,7 @@ def subscribe_to_context_broker():
             "type": "Subscription",
             "name": "TFA02 inputs subscription",
             "description": "Subscription description",
-            "entities": [
-                {"type": "BurntSegmentation"},
-                {"type": "FireSegmentation"},
-                {"type": "FloodSegmentation"},
-                {"type": "PersonVehicleDetection"},
-                {"type": "SmokeSegmentation"}
-            ],
+            "entities": [{"type": "SmokeSegmentation"}],
             "notification": {
                 "endpoint": {
                     "uri": post_data_url,

@@ -21,15 +21,16 @@ from src.plot_crp_explanations import plot_one_image_explanation, fig_to_array
 from src.plot_pcx_explanations_YOLO import plot_pcx_explanations
 from src.plot_pcx_explanations_YOLO import plot_one_image_pcx_explanation
 from src.plot_pcx_explanations_YOLO import ExplanationUnavailableError
-from src.plotpcx_gpu import plot_pcx_explanations_pidnet
+from src.plot_pcx_pidnet_new import plot_pcx_explanations as plot_smoke_pcx_explanations
 from src.datasets.person_car_dataset import PersonCarDataset
 from src.datasets.detection_subset import DetectionSubset
 from src.datasets.flood_dataset import FloodDataset
+from src.datasets.smoke_dataset import SmokeDataset
 from src.datasets.fire_dataset import FireDataset
-from LCRP.models.pidnet import infer_checkpoint_geometry
 from src.entities import (
     get_fire_segmentation_explanation_entity,
     get_flood_segmentation_explanation_entity,
+    get_smoke_segmentation_explanation_entity,
     get_person_vehicle_detection_explanation_entity,
 )
 from src.minio_client import FHHI_MINIO_BUCKET
@@ -158,6 +159,30 @@ class Explanator:
         self.flood_split = os.environ.get("FLOOD_DATA_SPLIT", "train")
         self.flood_min_coverage = float(os.environ.get("FLOOD_MIN_COVERAGE", "0.10"))
 
+        # Match examples/pidnet_smoke_BRK.ipynb and its existing CRP/PCX banks.
+        self.smoke_checkpoint = os.environ.get(
+            "SMOKE_CHECKPOINT",
+            os.path.join(self.project_root, "models", "smokemodel_pidnet.pth"),
+        )
+        self.smoke_data_root = os.environ.get(
+            "SMOKE_DATA_ROOT",
+            os.path.join(self.project_root, "data", "smoke_segmentation"),
+        )
+        self.smoke_crp_dir = os.environ.get(
+            "SMOKE_CRP_DIR",
+            os.path.join(self.project_root, "examples", "output", "crp", "CRP_SMOKE"),
+        )
+        self.smoke_pcx_dir = os.environ.get(
+            "SMOKE_PCX_DIR",
+            os.path.join(self.project_root, "examples", "output", "pcx", "PCX-SMOKE-ALL"),
+        )
+        self.smoke_ref_images_dir = os.environ.get(
+            "SMOKE_REF_IMAGES_DIR",
+            os.path.join(self.project_root, "examples", "new-ref-img-SMOKE"),
+        )
+        self.smoke_layer = os.environ.get("SMOKE_PCX_LAYER", "layer5.0.conv1")
+        self.smoke_min_coverage = float(os.environ.get("SMOKE_MIN_COVERAGE", "0.0"))
+
         self.kpi_mirror_roots = []
         mirror_root = "/home/heydari/Jawher/FHHI-XAI"
         if os.path.abspath(self.project_root) != os.path.abspath(mirror_root):
@@ -170,19 +195,14 @@ class Explanator:
         self._person_car_dataset_orig = None
         self._flood_model = None
         self._flood_dataset = None
+        self._smoke_model = None
+        self._smoke_dataset = None
         self._fire_model = None
         self._fire_dataset = None
 
         # Create a mapping from entity types to handler methods
         self.entity_handlers = {
-            "BurntSegmentation": self.explain_burnt_segmentation,
-            "FireSegmentation": self.explain_fire_segmentation,
-            "FloodSegmentation": self.explain_flood_segmentation,
-            "PersonVehicleDetection": self.explain_person_vehicle_detection,
             "SmokeSegmentation": self.explain_smoke_segmentation,
-            "EOBurntArea": self.explain_eo_burnt_area,
-            "EOFloodExtent": self.explain_eo_flood_extent,
-            "ImageMetadata": None,
         }
 
         self.VALID_ENTITY_TYPES = list(self.entity_handlers.keys())
@@ -345,6 +365,8 @@ class Explanator:
 
     def explain_fire_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray, bm_id, uav_id, flight_number, alert_ref):
         """Generate fire segmentation explanation using PCX."""
+        from src.plotpcx_gpu import plot_pcx_explanations_pidnet
+        from LCRP.models.pidnet import infer_checkpoint_geometry
         log_cuda_memory(self.logger, "FIRE_SEG START")
         original_entity_type = "FireSegmentation"
 
@@ -559,6 +581,7 @@ class Explanator:
 
     def explain_flood_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray, bm_id, uav_id, flight_number, alert_ref):
         """Generate flood segmentation explanation using PCX."""
+        from src.plotpcx_gpu import plot_pcx_explanations_pidnet
         log_cuda_memory(self.logger, "FLOOD_SEG START")
         original_entity_type = "FloodSegmentation"
 
@@ -1099,8 +1122,116 @@ class Explanator:
         )
         return explanation_entity, explanation_images, explanation_image_filenames
 
-    def explain_smoke_segmentation(self, src_entity: dict, image: np.ndarray):
-        raise NotImplementedError("Smoke segmentation explanation is not implemented yet.")
+    @property
+    def smoke_model(self):
+        if self._smoke_model is None:
+            if not os.path.isfile(self.smoke_checkpoint):
+                raise FileNotFoundError(f"Smoke checkpoint not found: {self.smoke_checkpoint}")
+            self._smoke_model = get_model(
+                model_name="pidnet", device="cpu", classes=2,
+                ckpt_path=self.smoke_checkpoint,
+            ).to(self.device).eval()
+            self._smoke_model.augment = False
+        return self._smoke_model
+
+    @property
+    def smoke_dataset(self):
+        if self._smoke_dataset is None:
+            self._smoke_dataset = SmokeDataset(
+                self.smoke_data_root, min_smoke_coverage=self.smoke_min_coverage
+            )
+            self.logger.info("Loaded smoke reference dataset: %d images", len(self._smoke_dataset))
+        return self._smoke_dataset
+
+    def _validate_smoke_explanation_assets(self):
+        bank_path = os.path.join(self.smoke_pcx_dir, self.smoke_layer, "attributions.npy")
+        crp_path = os.path.join(
+            self.smoke_crp_dir, "RelMax_sum_normed", f"{self.smoke_layer}_data.npy"
+        )
+        for path in (bank_path, crp_path):
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"Smoke explanation asset missing: {path}")
+        bank = np.load(bank_path, mmap_mode="r")
+        if bank.ndim != 2 or bank.shape[0] != len(self.smoke_dataset):
+            raise ValueError(
+                f"Smoke PCX bank shape {bank.shape} does not match "
+                f"{len(self.smoke_dataset)} reference images"
+            )
+        layer = dict(self.smoke_model.named_modules()).get(self.smoke_layer)
+        if layer is None or bank.shape[1] != layer.out_channels:
+            raise ValueError(
+                f"Smoke PCX bank width {bank.shape[1]} does not match "
+                f"model layer {self.smoke_layer}"
+            )
+        os.makedirs(self.smoke_ref_images_dir, exist_ok=True)
+
+    def explain_smoke_segmentation(self, original_image_bucket: str,
+                                   original_image_filename: str, image: np.ndarray,
+                                   bm_id, uav_id, flight_number, alert_ref):
+        """Explain an unlabelled smoke image with the notebook's PIDNet/PCX setup."""
+        original_entity_type = "SmokeSegmentation"
+        self._validate_smoke_explanation_assets()
+        model = self.smoke_model
+        model_device = next(model.parameters()).device
+        if model_device.type != "cuda":
+            raise RuntimeError(
+                "Smoke PCX requires CUDA for practical speed at 720x1280; "
+                "start the service with GPU access."
+            )
+        image_tensor = self.smoke_dataset.transform(image)
+
+        with timed_section(model_device) as prediction_timer:
+            with torch.inference_mode():
+                _ = model(image_tensor.unsqueeze(0).to(model_device))
+        prediction_time_s = prediction_timer.elapsed_s
+
+        try:
+            with timed_section(model_device) as explanation_timer:
+                explanation_fig = plot_smoke_pcx_explanations(
+                    "pidnet", model, self.smoke_dataset,
+                    sample_id=0, image_tensor=image_tensor,
+                    layer_name=self.smoke_layer, n_concepts=3, n_refimgs=3,
+                    num_prototypes=5,
+                    ref_imgs_path=self.smoke_ref_images_dir,
+                    output_dir_crp=self.smoke_crp_dir,
+                    output_dir_pcx=self.smoke_pcx_dir,
+                )
+        finally:
+            del image_tensor
+            _empty_cuda_cache()
+
+        explanation_img = fig_to_array(explanation_fig)
+        plt.close(explanation_fig)
+        gc.collect()
+
+        record = build_kpi_record(
+            model="pidnet", entity_type=original_entity_type,
+            scope="image", aggregation="raw", image=original_image_filename,
+            prediction_time_s=prediction_time_s,
+            global_lcrp_time_s=explanation_timer.elapsed_s,
+            layer=self.smoke_layer, n_concepts=3, n_refimgs=3,
+        )
+        image_logs = self._append_kpi_record_all("pidnet_image_kpis.txt", record)
+        _, avg_logs = self._append_avg_window_record_all(
+            source_filename="pidnet_image_kpis.txt",
+            avg_filename="pidnet_image_kpis_avg5.txt",
+            model="pidnet", entity_type=original_entity_type,
+            scope="image", layer=self.smoke_layer,
+        )
+        self.latest_kpi_log_paths = image_logs + avg_logs
+
+        explanation_image_filename = f"tfa02/{original_entity_type}/{original_image_filename}"
+        explanation_entity = get_smoke_segmentation_explanation_entity(
+            original_image_bucket=original_image_bucket,
+            original_image_filename=original_image_filename,
+            explanation_image_bucket=FHHI_MINIO_BUCKET,
+            explanation_image_filename=explanation_image_filename,
+            class_id=1, n_concepts=3, n_refimgs=3,
+            layer=self.smoke_layer, mode="relevance",
+            bm_id=bm_id, uav_id=uav_id,
+            flight_number=flight_number, alert_ref=alert_ref,
+        )
+        return explanation_entity, [explanation_img], [explanation_image_filename]
 
 
 # Configure basic logging if not done elsewhere

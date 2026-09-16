@@ -985,7 +985,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                     elif r == 1:
                         ax.set_title("heatmap", fontsize=12, pad=8)
                         if flood_segment_too_small:
-                            _show_message_box(ax, "Flood segment\nis too small")
+                            _show_message_box(ax, "Smoke segment\nis too small")
                         else:
                             heatmap_img = _heatmap_to_array(attr_heatmap)
                             if heatmap_img is not None:

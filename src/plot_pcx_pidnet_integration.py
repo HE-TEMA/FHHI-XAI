@@ -518,7 +518,7 @@ def plot_one_image_pcx_explanation(
                 elif r == 1:
                     ax.set_title("heatmap")
                     if flood_segment_too_small:
-                        _show_message_box(ax, "Flood segment\nis too small")
+                        _show_message_box(ax, "Smoke segment\nis too small")
                     else:
                         ax.imshow(base_heatmap_res)
                 elif r == 2:
