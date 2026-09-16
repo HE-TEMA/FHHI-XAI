@@ -27,7 +27,10 @@ import matplotlib.pyplot as plt
 
 from LCRP.models.pidnet import get_pidnet, infer_checkpoint_geometry
 
-from examples.build_crp_pcx_multilayer import DATASETS, build_dataset
+from examples.build_crp_pcx_multilayer import (
+    DATASETS, build_dataset, add_burnt_arguments, burnt_dataset_options,
+)
+from src.pidnet_bank import validate_burnt_artifacts, load_bank_indices, burnt_reference_cache
 from src.plotpcx_gpu import plot_pcx_explanations_pidnet
 
 LAYER_ALIASES = {
@@ -82,6 +85,10 @@ def main():
                         help="fire only: must match the value the PCX bank was built "
                              "with, or the bank rows and dataset indices disagree.")
     parser.add_argument("--device", default=None)
+    add_burnt_arguments(parser)
+    parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--data-root", type=Path, default=None)
+    parser.add_argument("--limit", type=int, default=None, help="must match a limited bank build")
     args = parser.parse_args()
 
     for name in ("PIL", "matplotlib"):
@@ -104,7 +111,7 @@ def main():
         )
 
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
-    checkpoint = str(PROJECT_ROOT / spec["checkpoint"])
+    checkpoint = str(args.checkpoint or PROJECT_ROOT / spec["checkpoint"])
     in_channels, classes = infer_checkpoint_geometry(checkpoint)
     model = get_pidnet(device=device, ckpt_path=checkpoint,
                        classes=classes, in_channels=in_channels).eval()
@@ -112,14 +119,19 @@ def main():
     extra = ({"modality": args.modality, "require_fire": not args.keep_empty,
               "min_fire_coverage": 0.0 if args.keep_empty else args.min_fire_coverage}
              if args.dataset == "fire" else {})
-    dataset = build_dataset(args.dataset, PROJECT_ROOT / spec["data_root"], **extra)
+    if args.dataset == "burnt":
+        extra = burnt_dataset_options(args)
+    dataset = build_dataset(args.dataset, args.data_root or PROJECT_ROOT / spec["data_root"], **extra)
+    if args.limit is not None:
+        if args.limit <= 0:
+            parser.error("--limit must be positive")
+        dataset.files = dataset.files[:args.limit]
+    if args.dataset == "burnt":
+        validate_burnt_artifacts(dataset, checkpoint, args.out_crp, args.out_pcx, layer)
+        args.ref_images = Path(burnt_reference_cache(dataset, checkpoint, args.ref_images))
 
     n_rows = len(np.load(bank))
-    if n_rows != len(dataset):
-        raise ValueError(
-            f"Bank has {n_rows} rows but the dataset has {len(dataset)}. The bank was "
-            "built with different options; prototype images would be mismatched."
-        )
+    load_bank_indices(bank.parent, n_rows, len(dataset))
 
     if args.samples:
         chosen = [(i, float((dataset.load_sample(i)[1] == 1).mean())) for i in args.samples]
