@@ -34,7 +34,12 @@ ENV PORT=8080 \
     PROCESSING_UNIT=gpu \
     REDIS_HOST=localhost \
     REDIS_PORT=6379 \
-    ENTITIES_TO_EXPLAIN=FireSegmentation
+    ENTITIES_TO_EXPLAIN=BurntSegmentation \
+    BURNT_LAYER=layer4.0.conv1 \
+    BURNT_OUTLIER_PERCENTILE=2 \
+    BURNT_CRP_DIR=/app/output/crp/pidnet_burnt_multilayer \
+    BURNT_PCX_DIR=/app/output/pcx/pidnet_burnt_multilayer \
+    BURNT_REF_IMAGES_DIR=/app/output/ref_imgs_burnt_multilayer_rf
 
 WORKDIR /app
 

@@ -13,30 +13,37 @@ tests
 References
 plots
 KPIs.pdf
+PIDNet
+PIDNet_brk2
+TEMA_trainin_evaluation_ws
+TEMA_trainin_evaluation_ws.zip
+*.png
+instances_*.json
 
 output_original
 output_BRK
 
-# Include fire and burnt artifacts; exclude other large datasets and caches.
-output
-!output/crp/pidnet_fire_sweep
-!output/pcx/pidnet_fire_sweep
-!output/ref_imgs_fire_rf
+# This branch builds the burnt-segmentation service image. Include only its
+# runtime model, reference dataset, layer-4 banks and reference-image cache.
+output/*
+!output/crp/
+output/crp/*
+!output/crp/pidnet_burnt_multilayer/
+!output/crp/pidnet_burnt_multilayer/**
+!output/pcx/
+output/pcx/*
+!output/pcx/pidnet_burnt_multilayer/
+!output/pcx/pidnet_burnt_multilayer/**
+!output/ref_imgs_burnt_multilayer_rf/
+!output/ref_imgs_burnt_multilayer_rf/**
 
-data
-!data/FireSeg
+data/*
+!data/Segmentation_Blaze/
+!data/Segmentation_Blaze/**
 
-models
-!models/firemodel_pidnet_multi.pth
+models/*
+!models/pidnet_s_burnt.pt
 
 *.log
 *.tmp
 burnt_segmentation.zip
-
-# Burnt artifacts are intentionally NOT baked into the fire image; re-add these
-# !includes when building the burnt image (ENTITIES_TO_EXPLAIN=BurntSegmentation).
-# !data/Segmentation_Blaze
-# !models/pidnet_s_burnt.pt
-# !output/crp/pidnet_burnt_sweep
-# !output/pcx/pidnet_burnt_sweep
-# !output/ref_imgs_burnt_rf

@@ -14,6 +14,7 @@ Example:
 """
 import argparse
 import gc
+import json
 import logging
 import sys
 from pathlib import Path
@@ -31,10 +32,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from LCRP.models.pidnet import get_pidnet, infer_checkpoint_geometry
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, COMPOSITES
 from src.glocal_analysis import run_analysis
+from src.pidnet_bank import burnt_artifact_metadata
 
-# Both tasks are PIDNet, so the CRP/PCX machinery is shared. Only the dataset
-# and the checkpoint geometry differ: flood is RGB, fire is RGB + ir.
+# All tasks use PIDNet and share the CRP/PCX machinery.
 DATASETS = {
+    "burnt": {
+        "module": "src.datasets.burnt_dataset",
+        "cls": "BurntDataset",
+        "checkpoint": "models/pidnet_s_burnt.pt",
+        "data_root": "data/Segmentation_Blaze",
+        "class_id": 1,
+    },
     "flood": {
         "module": "src.datasets.flood_dataset_crp",
         "cls": "FloodDataset",
@@ -59,6 +67,20 @@ def build_dataset(name: str, root, split: str = "train", **kwargs):
     return getattr(module, spec["cls"])(root=str(root), split=split, **kwargs)
 
 
+def add_burnt_arguments(parser):
+    parser.add_argument("--min-burnt-coverage", type=float, default=0.0,
+                        help="burnt pixel fraction; must match bank build and service")
+    parser.add_argument("--burnt-channel-order", choices=["RGB", "BGR"], default="RGB")
+    parser.add_argument("--burnt-size", type=int, nargs=2, default=[720, 1280],
+                        metavar=("HEIGHT", "WIDTH"))
+
+
+def burnt_dataset_options(args):
+    return dict(require_burnt=not args.keep_empty,
+                min_burnt_coverage=args.min_burnt_coverage,
+                channel_order=args.burnt_channel_order, crop_size=tuple(args.burnt_size))
+
+
 DEFAULT_LAYERS = [
     "layer1.0.conv1",
     "layer2.0.conv1",
@@ -77,6 +99,7 @@ def build_pcx_banks(model, dataset, layers, class_id, device, out_pcx: Path):
 
     rows = {layer: [] for layer in layers}
     skipped = {layer: 0 for layer in layers}
+    sample_indices = {layer: [] for layer in layers}
 
     for index in tqdm(range(len(dataset)), desc="attribution banks", dynamic_ncols=True):
         image, _ = dataset[index]
@@ -94,6 +117,7 @@ def build_pcx_banks(model, dataset, layers, class_id, device, out_pcx: Path):
                 row = cc.attribute(relevance, abs_norm=True).detach().cpu()
                 if torch.isfinite(row).all():
                     rows[layer].append(row)
+                    sample_indices[layer].append(index)
                 else:
                     skipped[layer] += 1
             del attr
@@ -109,12 +133,12 @@ def build_pcx_banks(model, dataset, layers, class_id, device, out_pcx: Path):
 
     for layer in layers:
         if not rows[layer]:
-            print(f"  {layer}: no usable rows, bank not written")
-            continue
+            raise ValueError(f"{layer}: no usable attribution rows; bank not written")
         bank = torch.cat(rows[layer]).numpy()
         bank_dir = out_pcx / layer
         bank_dir.mkdir(parents=True, exist_ok=True)
         np.save(bank_dir / "attributions.npy", bank)
+        np.save(bank_dir / "sample_indices.npy", np.asarray(sample_indices[layer], dtype=np.int64))
         print(f"  {layer}: bank {bank.shape}, skipped {skipped[layer]}")
 
 
@@ -133,7 +157,7 @@ def main():
     parser.add_argument("--modality", choices=["rgb", "ir", "all"], default="rgb",
                         help="fire only: which modality subset to analyse")
     parser.add_argument("--keep-empty", action="store_true",
-                        help="fire only: keep images whose mask has no fire. They "
+                        help="fire/burnt: keep images with no target pixels. They "
                              "produce all-zero concept vectors and capture a whole "
                              "GMM component, so they are dropped by default.")
     parser.add_argument("--min-fire-coverage", type=float, default=0.0,
@@ -142,6 +166,7 @@ def main():
                              "Tightens the default >0 filter; ignored with --keep-empty.")
     parser.add_argument("--skip-crp", action="store_true")
     parser.add_argument("--skip-pcx", action="store_true")
+    add_burnt_arguments(parser)
     args = parser.parse_args()
 
     logging.getLogger("PIL").setLevel(logging.WARNING)
@@ -165,9 +190,15 @@ def main():
     fire_extra = ({"modality": args.modality, "require_fire": not args.keep_empty,
                    "min_fire_coverage": 0.0 if args.keep_empty else args.min_fire_coverage}
              if args.dataset == "fire" else {})
-    dataset = build_dataset(args.dataset, data_root, **fire_extra)
+    dataset_options = burnt_dataset_options(args) if args.dataset == "burnt" else fire_extra
+    dataset = build_dataset(args.dataset, data_root, **dataset_options)
     if args.limit is not None:
+        if args.limit <= 0:
+            parser.error("--limit must be positive")
         dataset.files = dataset.files[:args.limit]
+    if args.dataset == "burnt" and (in_channels, classes, class_id) != (3, 2, 1):
+        parser.error("Burnt requires a 3-channel, 2-class model with class-id 1")
+    metadata = burnt_artifact_metadata(dataset, checkpoint) if args.dataset == "burnt" else None
 
     print(f"task={args.dataset} device={device} images={len(dataset)} "
           f"layers={len(args.layers)} in_channels={in_channels} classes={classes} "
@@ -180,15 +211,25 @@ def main():
     if not args.skip_crp:
         print("\n[1/2] CRP statistics")
         args.out_crp.mkdir(parents=True, exist_ok=True)
+        if metadata is not None:
+            (args.out_crp / "burnt_metadata.json").unlink(missing_ok=True)
         run_analysis(model_name="pidnet", model=model, dataset=dataset,
                      output_dir=str(args.out_crp), device=device,
                      class_id=class_id, record_layers=list(args.layers))
+        if metadata is not None:
+            (args.out_crp / "burnt_metadata.json").write_text(json.dumps(metadata, indent=2))
         print(f"  written to {args.out_crp}")
 
     if not args.skip_pcx:
         print("\n[2/2] PCX attribution banks")
+        if metadata is not None:
+            for layer in args.layers:
+                (args.out_pcx / layer / "burnt_metadata.json").unlink(missing_ok=True)
         build_pcx_banks(model, dataset, list(args.layers), class_id,
                         device, args.out_pcx)
+        if metadata is not None:
+            for layer in args.layers:
+                (args.out_pcx / layer / "burnt_metadata.json").write_text(json.dumps(metadata, indent=2))
         print(f"  written to {args.out_pcx}")
 
     print("\ndone")

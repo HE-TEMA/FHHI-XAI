@@ -26,3 +26,7 @@ KPIs.pdf
 /output_original/
 /output_BRK/
 examples/yolo_brk_pcx.pdf
+
+PIDNet/
+PIDNet_brk2/
+.wip_burnt_backup/

@@ -26,9 +26,12 @@ from src.datasets.person_car_dataset import PersonCarDataset
 from src.datasets.detection_subset import DetectionSubset
 from src.datasets.flood_dataset import FloodDataset
 from src.datasets.fire_dataset import FireDataset
+from src.datasets.burnt_dataset import BurntDataset
+from src.pidnet_bank import validate_burnt_artifacts, burnt_reference_cache
 from LCRP.models.pidnet import infer_checkpoint_geometry
 from src.entities import (
     get_fire_segmentation_explanation_entity,
+    get_burnt_segmentation_explanation_entity,
     get_flood_segmentation_explanation_entity,
     get_person_vehicle_detection_explanation_entity,
 )
@@ -132,10 +135,37 @@ class Explanator:
             os.path.join(self.project_root, "output", "ref_imgs_fire_rf"),
         )
 
-        self.kpi_mirror_roots = []
-        mirror_root = "/home/heydari/Jawher/FHHI-XAI"
-        if os.path.abspath(self.project_root) != os.path.abspath(mirror_root):
-            self.kpi_mirror_roots.append(mirror_root)
+        self.burnt_checkpoint = os.environ.get(
+            "BURNT_CHECKPOINT",
+            os.path.join(self.project_root, "models", "pidnet_s_burnt.pt"),
+        )
+        self.burnt_data_root = os.environ.get(
+            "BURNT_DATA_ROOT",
+            os.path.join(self.project_root, "data", "Segmentation_Blaze"),
+        )
+        self.burnt_crp_dir = os.environ.get(
+            "BURNT_CRP_DIR",
+            os.path.join(self.project_root, "output", "crp", "pidnet_burnt_multilayer"),
+        )
+        self.burnt_pcx_dir = os.environ.get(
+            "BURNT_PCX_DIR",
+            os.path.join(self.project_root, "output", "pcx", "pidnet_burnt_multilayer"),
+        )
+        self.burnt_ref_images_dir = os.environ.get(
+            "BURNT_REF_IMAGES_DIR",
+            os.path.join(self.project_root, "output", "ref_imgs_burnt_multilayer_rf"),
+        )
+        self.burnt_layer = os.environ.get("BURNT_LAYER", "layer4.0.conv1")
+        self.burnt_outlier_percentile = float(
+            os.environ.get("BURNT_OUTLIER_PERCENTILE", "2")
+        )
+        if not 0 <= self.burnt_outlier_percentile <= 100:
+            raise ValueError("BURNT_OUTLIER_PERCENTILE must be between 0 and 100")
+
+        self.kpi_mirror_roots = [
+            root for root in os.environ.get("KPI_MIRROR_ROOTS", "").split(os.pathsep)
+            if root and os.path.abspath(root) != os.path.abspath(self.project_root)
+        ]
 
         # Lazy loading approach - don't load models until needed
         self._person_vehicle_model = None
@@ -146,6 +176,8 @@ class Explanator:
         self._flood_dataset = None
         self._fire_model = None
         self._fire_dataset = None
+        self._burnt_model = None
+        self._burnt_dataset = None
 
         # Create a mapping from entity types to handler methods
         self.entity_handlers = {
@@ -269,9 +301,6 @@ class Explanator:
     def explain_eo_flood_extent(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
         raise NotImplementedError("EO Flood Extent explanation is not implemented yet.")
 
-    def explain_burnt_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray):
-        raise NotImplementedError("Burnt segmentation explanation is not implemented yet.")
-
     @property
     def fire_model(self):
         if self._fire_model is None:
@@ -316,6 +345,186 @@ class Explanator:
         combined = (combined - dataset.mean) / dataset.std
         combined = combined.transpose(2, 0, 1)
         return torch.from_numpy(combined.copy()).to(dtype=self.dtype)
+
+    @property
+    def burnt_model(self):
+        if self._burnt_model is None:
+            geometry = infer_checkpoint_geometry(self.burnt_checkpoint)
+            if geometry != (3, 2):
+                raise ValueError(f"Burnt expects a 3-channel, 2-class checkpoint, got {geometry}")
+            self._burnt_model = get_model(
+                model_name="pidnet", ckpt_path=self.burnt_checkpoint,
+                classes=2, in_channels=3, device=self.device,
+            ).eval()
+        return self._burnt_model
+
+    @property
+    def burnt_dataset(self):
+        if self._burnt_dataset is None:
+            self._burnt_dataset = BurntDataset(
+                root=self.burnt_data_root, split="train",
+                require_burnt=os.environ.get("BURNT_KEEP_EMPTY", "0") != "1",
+                min_burnt_coverage=float(os.environ.get("BURNT_MIN_COVERAGE", "0")),
+                channel_order=os.environ.get("BURNT_CHANNEL_ORDER", "RGB"),
+                crop_size=(int(os.environ.get("BURNT_HEIGHT", "720")),
+                           int(os.environ.get("BURNT_WIDTH", "1280"))),
+            )
+        return self._burnt_dataset
+
+    def _burnt_image_tensor(self, image: np.ndarray) -> torch.Tensor:
+        return self.burnt_dataset.transform(image).to(dtype=self.dtype)
+
+    def explain_burnt_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray, bm_id, uav_id, flight_number, alert_ref):
+        """Generate burnt segmentation explanation using PCX."""
+        log_cuda_memory(self.logger, "BURNT_SEG START")
+        original_entity_type = "BurntSegmentation"
+
+        layer_name = self.burnt_layer
+        validate_burnt_artifacts(self.burnt_dataset, self.burnt_checkpoint,
+                                 self.burnt_crp_dir, self.burnt_pcx_dir, layer_name)
+
+        # Parameters
+        class_id = 1  # Burnt class ID
+        n_concepts = 3
+        n_refimgs = 8
+        model_name = "pidnet"
+        num_prototypes = 8
+        output_dir_pcx = self.burnt_pcx_dir
+        output_dir_crp = self.burnt_crp_dir
+        ref_imgs_path = burnt_reference_cache(
+            self.burnt_dataset, self.burnt_checkpoint, self.burnt_ref_images_dir)
+        active_device = next(self.burnt_model.parameters()).device
+
+        log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
+        image_tensor = self._burnt_image_tensor(image)
+        image_tensor = image_tensor.to(active_device, non_blocking=True)
+        log_cuda_memory(self.logger, "AFTER IMAGE TRANSFORM")
+
+        self.burnt_model.eval()
+
+        with timed_section(active_device) as prediction_timer:
+            with torch.no_grad():
+                prediction = self.burnt_model(image_tensor.unsqueeze(0))
+                logits = prediction[1] if isinstance(prediction, (list, tuple)) else prediction
+                has_burnt = bool((logits.argmax(dim=1) == class_id).any())
+                del logits, prediction
+        prediction_time_s = prediction_timer.elapsed_s
+        if not has_burnt:
+            self.logger.info("No burnt pixels predicted; skipping burnt explanation")
+            return None, [], []
+
+        log_cuda_memory(self.logger, "BEFORE EXPLANATION GENERATION")
+        used_n_refimgs = n_refimgs
+        used_n_concepts = n_concepts
+        try:
+            explanation_fig = plot_pcx_explanations_pidnet(
+                model_name,
+                self.burnt_model,
+                self.burnt_dataset,
+                image_tensor=image_tensor,
+                layer_name=layer_name,
+                n_concepts=n_concepts,
+                n_refimgs=n_refimgs,
+                num_prototypes=num_prototypes,
+                ref_imgs_path=ref_imgs_path,
+                output_dir_crp=output_dir_crp,
+                output_dir_pcx=output_dir_pcx,
+                device=active_device,
+                precision="fp32",
+                outlier_percentile=self.burnt_outlier_percentile,
+                use_rf=True,
+            )
+        except Exception as exc:
+            if not (_is_cuda_oom(exc) and active_device.type == "cuda" and torch.cuda.is_available()):
+                raise
+            self.logger.warning("Burnt explanation hit CUDA OOM; retrying on CPU: %s", exc)
+            gc.collect()
+            _empty_cuda_cache()
+            cpu_model = self.burnt_model.to("cpu")
+            cpu_model.eval()
+            explanation_fig = plot_pcx_explanations_pidnet(
+                model_name,
+                cpu_model,
+                self.burnt_dataset,
+                image_tensor=image_tensor.detach().cpu(),
+                layer_name=layer_name,
+                n_concepts=n_concepts,
+                n_refimgs=n_refimgs,
+                num_prototypes=num_prototypes,
+                ref_imgs_path=ref_imgs_path,
+                output_dir_crp=output_dir_crp,
+                output_dir_pcx=output_dir_pcx,
+                device=torch.device("cpu"),
+                precision="fp32",
+                outlier_percentile=self.burnt_outlier_percentile,
+                use_rf=True,
+            )
+            self._burnt_model = cpu_model
+            used_n_refimgs = getattr(explanation_fig, "_n_refimgs_used", n_refimgs)
+            used_n_concepts = getattr(explanation_fig, "_n_concepts_used", n_concepts)
+        finally:
+            del image_tensor
+            _empty_cuda_cache()
+
+        used_n_refimgs = getattr(explanation_fig, "_n_refimgs_used", n_refimgs)
+        used_n_concepts = getattr(explanation_fig, "_n_concepts_used", n_concepts)
+        figure_kpis = getattr(explanation_fig, "_kpi_metrics", {})
+        backward_time_s = float(figure_kpis.get("backward_time_s", 0.0))
+        full_attribution_time_s = float(figure_kpis.get("full_attribution_time_s", 0.0))
+
+        pidnet_record = build_kpi_record(
+            model="pidnet",
+            entity_type=original_entity_type,
+            scope="image",
+            aggregation="raw",
+            image=original_image_filename,
+            prediction_time_s=prediction_time_s,
+            global_lcrp_time_s=backward_time_s,
+            global_total_time_s=full_attribution_time_s,
+            layer=layer_name,
+            n_concepts=used_n_concepts,
+            n_refimgs=used_n_refimgs,
+        )
+        pidnet_image_logs = self._append_kpi_record_all("pidnet_image_kpis.txt", pidnet_record)
+        _, pidnet_avg5_logs = self._append_avg_window_record_all(
+            source_filename="pidnet_image_kpis.txt",
+            avg_filename="pidnet_image_kpis_avg5.txt",
+            model="pidnet",
+            entity_type=original_entity_type,
+            scope="image",
+            layer=layer_name,
+        )
+        self.latest_kpi_log_paths = pidnet_image_logs + pidnet_avg5_logs
+
+        log_cuda_memory(self.logger, "AFTER EXPLANATION GENERATION")
+
+        explanation_fig.set_size_inches(18, 11)
+        explanation_img = fig_to_array(explanation_fig)
+        plt.close(explanation_fig)
+        gc.collect()
+
+        explanation_image_filename = f"tfa02/{original_entity_type}/{original_image_filename}"
+
+        explanation_entity = get_burnt_segmentation_explanation_entity(
+            original_image_bucket=original_image_bucket,
+            original_image_filename=original_image_filename,
+            explanation_image_bucket=FHHI_MINIO_BUCKET,
+            explanation_image_filename=explanation_image_filename,
+            class_id=class_id,
+            n_concepts=used_n_concepts,
+            n_refimgs=used_n_refimgs,
+            layer=layer_name,
+            mode="relevance",
+            bm_id=bm_id,
+            uav_id=uav_id,
+            flight_number=flight_number,
+            alert_ref=alert_ref
+        )
+
+        log_cuda_memory(self.logger, "BURNT_SEG END")
+        _empty_cuda_cache()
+
+        return explanation_entity, [explanation_img], [explanation_image_filename]
 
     def explain_fire_segmentation(self, original_image_bucket: str, original_image_filename: str, image: np.ndarray, bm_id, uav_id, flight_number, alert_ref):
         """Generate fire segmentation explanation using PCX."""

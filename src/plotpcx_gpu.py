@@ -26,6 +26,7 @@ from torchvision.utils import draw_segmentation_masks, make_grid
 
 import zennit.image as zimage
 from sklearn.mixture import GaussianMixture
+from src.pidnet_bank import load_bank_indices
 
 from crp.helper import get_layer_names
 from LCRP.utils.crp_configs import ATTRIBUTORS, CANONIZERS, VISUALIZATIONS, COMPOSITES
@@ -457,6 +458,7 @@ def get_ref_images(fv, topk_ind, layer_name, composite, n_ref=12,
     os.makedirs(os.path.dirname(ref_imgs_save_path), exist_ok=True)
 
     ref_imgs = {}
+    missing_keys = list(map(str, topk_ind))
 
     def _store(group, images_list):
         """Write the first n_ref PIL images into an h5 group; return the kept ones."""
@@ -628,6 +630,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
         raise FileNotFoundError(f"Attributions file not found: {folder + 'attributions.npy'}")
     # load to CPU then to device as needed; keep a CPU copy for sklearn
     attributions_np = np.load(folder + "attributions.npy")  # numpy on CPU
+    bank_indices = load_bank_indices(folder, len(attributions_np), len(dataset))
     # torch tensor on device for any tensor ops
     attributions = torch.from_numpy(attributions_np).to(active_device, non_blocking=non_blocking)
 
@@ -713,7 +716,7 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     data_p_device = None
     if not skip_prototype:
         # Closest prototype sample from dataset (data_p, target_p usually CPU tensors)
-        sample_p = dataset[closest_sample_to_mean]
+        sample_p = dataset[int(bank_indices[closest_sample_to_mean])]
         data_p, target_p = _extract_sample_image_target(sample_p)
         data_p = _ensure_sample_image_tensor(data_p)
         # keep a CPU copy of target_p for mask computations; move input data to device for model ops
@@ -934,8 +937,8 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
     if axs.ndim == 1:
         axs = axs[None, :]
 
-    flood_segment_ratio = float(mask.float().mean().item()) if torch.is_tensor(mask) else 0.0
-    flood_segment_too_small = flood_segment_ratio < 0.005  # <0.5% of pixels predicted as flood
+    segment_ratio = float(mask.float().mean().item()) if torch.is_tensor(mask) else 0.0
+    segment_too_small = segment_ratio < 0.005
     relevance_too_small_thr = 1e-3  # 0.1%
 
     for r, row_axs in enumerate(axs):
@@ -968,8 +971,8 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
                             pass
                     elif r == 1:
                         ax.set_title("heatmap", fontsize=12, pad=8)
-                        if flood_segment_too_small:
-                            _show_message_box(ax, "Flood segment\nis too small")
+                        if segment_too_small:
+                            _show_message_box(ax, "Target segment\nis too small")
                         else:
                             heatmap_img = _heatmap_to_array(attr_heatmap)
                             if heatmap_img is not None:
