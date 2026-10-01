@@ -395,14 +395,15 @@ def plot_one_image_pcx_explanation(
     if runtime_layer != resolved_layer:
         print(f"[attr] using runtime layer '{runtime_layer}' for conditional attribution hooks")
 
-    # Heatmap
-    heatmap_pil = zimage.imgify(attr.heatmap.detach().cpu(), cmap="bwr", symmetric=True, level=10)
-    print("[attr] base heatmap computed")
-
     # Build binary mask from prediction argmax==1
     print("[mask] building predicted mask")
     pred = attr.prediction[0].argmax(dim=0)   # [H,W]
     mask_bool = (pred == 1).detach().cpu()    # [H,W]
+    if not mask_bool.any():
+        fig, ax = plt.subplots(figsize=(8, 3))
+        _show_message_box(ax, "No predicted flood pixels\nFlood relevance is zero\nNo flood PCX prototype match")
+        fig.tight_layout()
+        return fig
 
     # Determine target size using dataset.reverse_augmentation if available
     try:
@@ -425,6 +426,12 @@ def plot_one_image_pcx_explanation(
     print("[concepts] computing channel relevances")
     channel_rels = ChannelConcept().attribute(attr.relevances[resolved_layer], abs_norm=True)  # [1,C]
     channel_rels_vec = channel_rels[0]  # [C]
+    if not torch.isfinite(channel_rels_vec).all() or not channel_rels_vec.abs().any():
+        fig, ax = plt.subplots(figsize=(8, 3))
+        _show_message_box(ax, "No nonzero flood relevance at this layer\nNo flood PCX prototype match")
+        fig.tight_layout()
+        return fig
+    heatmap_pil = zimage.imgify(attr.heatmap.detach().cpu(), cmap="bwr", symmetric=True, level=10)
     print(f"[concepts] channel_rels shape={tuple(channel_rels.shape)}")
 
     # Load attributions matrix for GMM
@@ -438,6 +445,7 @@ def plot_one_image_pcx_explanation(
         print(f"[gmm] remapped PCX layer '{resolved_layer}' -> '{resolved_pcx_layer}'")
     print(f"[gmm] loading attributions @ {attr_path}")
     attributions_np = np.load(attr_path)  # shape [N, C]
+    bank_indices = np.arange(len(attributions_np))
     print(f"[gmm] attributions shape={attributions_np.shape}")
     if attributions_np.size == 0:
         raise ValueError(f"[gmm] Empty attribution bank for layer '{layer}'. Re-run attribution export first.")
@@ -447,6 +455,7 @@ def plot_one_image_pcx_explanation(
         bad = int((~finite_mask).sum())
         print(f"[gmm] WARNING: dropping {bad} rows with NaN/Inf values before fitting GMM.")
         attributions_np = attributions_np[finite_mask]
+        bank_indices = bank_indices[finite_mask]
 
     attributions_np = np.nan_to_num(attributions_np, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -460,6 +469,7 @@ def plot_one_image_pcx_explanation(
         dropped = int((~nonzero_mask).sum())
         print(f"[gmm] INFO: dropping {dropped} constant rows from attribution bank.")
         attributions_np = attributions_np[nonzero_mask]
+        bank_indices = bank_indices[nonzero_mask]
 
     # Diverse top concepts
     num_ch = int(channel_rels_vec.numel())
@@ -549,7 +559,7 @@ def plot_one_image_pcx_explanation(
     print("[gmm] finding closest sample to prototype mean")
     attributions_t = torch.from_numpy(attributions_np)  # [N,C]
     dists = (attributions_t - mean[None, :]).pow(2).sum(dim=1)  # [N]
-    closest_idx = int(torch.argmin(dists).item())
+    closest_idx = int(bank_indices[int(torch.argmin(dists).item())])
     print(f"[gmm] closest_idx={closest_idx}")
 
     # Prototype image and cond heatmaps

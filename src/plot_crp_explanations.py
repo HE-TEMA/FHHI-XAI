@@ -561,6 +561,18 @@ def plot_one_image_explanation_optimized(model_name, model, img, dataset, class_
     # === Channel relevance ===
     if mode == "relevance":
         channel_rels = ChannelConcept().attribute(attr.relevances[resolved_layer], abs_norm=True)
+        if not torch.isfinite(channel_rels).all() or not channel_rels.abs().any():
+            plt.close(fig)
+            fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+            visual = raw_display.astype(np.uint8) if raw_display.max() > 1.5 else raw_display
+            axes[0].imshow(visual)
+            axes[0].set_title("Input image")
+            axes[1].text(.5, .5, "No nonzero class relevance at this layer\nNo relevant concepts to rank",
+                         ha="center", va="center", transform=axes[1].transAxes)
+            for axis in axes:
+                axis.axis("off")
+            fig.tight_layout()
+            return fig
     else:
         channel_rels = attr.activations[resolved_layer].detach().cpu().flatten(start_dim=2).max(2)[0]
         channel_rels = channel_rels / channel_rels.abs().sum(1)[:, None]
