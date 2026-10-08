@@ -34,7 +34,9 @@ class FloodDataset(BaseDataset):
 
     class_names = ["background", "flood"]
     # Valid label colors; everything else becomes ignore_label
-    color_list = [[0, 0, 0], [1, 1, 1]]
+    color_list = [[0, 0, 0], [255, 255, 255]]
+    # Accept legacy masks storing class IDs directly as RGB values too.
+    flood_colors = ((1, 1, 1), (255, 255, 255))
     _coverage_cache = {}
 
     def __init__(
@@ -136,7 +138,7 @@ class FloodDataset(BaseDataset):
         self.class_weights = None
 
     def _filter_by_flood_coverage(self, threshold):
-        """Keep masks whose exact class-1 color covers more than threshold."""
+        """Keep masks whose supported flood colors cover more than threshold."""
         threshold = float(threshold)
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("min_flood_coverage must be between 0 and 1")
@@ -149,11 +151,14 @@ class FloodDataset(BaseDataset):
                     mask = source.convert("RGB")
                     colors = mask.getcolors(maxcolors=256)
                     if colors is not None:
-                        flood_pixels = sum(n for n, color in colors if color == (1, 1, 1))
+                        flood_pixels = sum(n for n, color in colors if color in self.flood_colors)
                         coverage = flood_pixels / float(mask.width * mask.height)
                     else:
                         array = np.asarray(mask)
-                        coverage = float(np.mean(np.all(array == (1, 1, 1), axis=2)))
+                        flood = np.zeros(array.shape[:2], dtype=bool)
+                        for color in self.flood_colors:
+                            flood |= np.all(array == color, axis=2)
+                        coverage = float(np.mean(flood))
                 self._coverage_cache[path] = coverage
             return item, coverage
 
@@ -295,6 +300,8 @@ class FloodDataset(BaseDataset):
             v = np.array(v, dtype=np.uint8)
             mask = (color_map == v).sum(2) == 3
             label[mask] = np.int32(i)
+        for color in self.flood_colors:
+            label[np.all(color_map == color, axis=2)] = 1
         return label
 
     def label2color(self, label: np.ndarray) -> np.ndarray:
