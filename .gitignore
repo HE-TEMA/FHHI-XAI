@@ -30,3 +30,6 @@ examples/yolo_brk_pcx.pdf
 PIDNet_brk2/
 examples/pidnet_smoke_preprocessing_and_metrics_check.ipynb
 examples/pidnet_smoke_BRK.ipynb
+*.png
+examples/prototype_comparison/
+examples/outlier_analysis/
