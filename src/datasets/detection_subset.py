@@ -40,3 +40,34 @@ class DetectionSubset(Dataset):
 
     def reverse_normalization(self, data):
         return self.dataset.reverse_normalization(data)
+
+
+class DetectionReferenceDataset(Dataset):
+    class_names = ("person", "car")
+    reference_prediction_num = 0
+
+    def __init__(self, root_dir, targets, transform):
+        from src.datasets.person_car_dataset import PersonCarDataset
+        self.targets = targets
+        self.datasets = {
+            split: PersonCarDataset(str(root_dir), split=split, transform=transform)
+            for split in {row["split"] for row in targets}
+        }
+        for row in targets:
+            if row["prediction_num"] != 0:
+                raise ValueError("This reference view supports the rank-0 bank only")
+            dataset = self.datasets[row["split"]]
+            if dataset.image_files[int(row["original_dataset_idx"])] != row["image"]:
+                raise ValueError("Reference target does not match original dataset order")
+
+    def __len__(self):
+        return len(self.targets)
+
+    def __getitem__(self, index):
+        row = self.targets[int(index)]
+        image, _ = self.datasets[row["split"]][int(row["original_dataset_idx"])]
+        class_id = int(row["class_id"])
+        return image, torch.tensor([[class_id, class_id]], dtype=torch.long)
+
+    def reverse_normalization(self, data):
+        return data.mul(255).detach().cpu()

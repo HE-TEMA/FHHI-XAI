@@ -26,7 +26,8 @@ FROM python:3.10-slim-bookworm
 # Container settings only; application defaults live in the Python code.
 # Override explanation settings at runtime with docker run -e when needed.
 ENV PORT=8080 \
-    MPLCONFIGDIR=/tmp/matplotlib
+    MPLCONFIGDIR=/tmp/matplotlib \
+    PERSON_VEHICLE_CONFIG=/app/output/production/person_vehicle_stem_p5_20261012/k4.json
 
 WORKDIR /app
 

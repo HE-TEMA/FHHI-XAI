@@ -33,7 +33,6 @@ from PIL import ImageDraw
 from src.pcx_helper import get_ref_images, get_detection_crop, get_detection_crop_input
 from src.letterbox_utils import rescale_boxes
 from src.yolo_class_mapping import (
-    class_matched_box_or_fallback as _class_matched_box_or_fallback,
     class_name as _class_name,
     matching_detection_index as _matching_detection_index,
     resolve_display_class_names as _resolve_display_class_names,
@@ -95,7 +94,7 @@ def _show_low_signal_box(ax, message="relevance too small\nor object too small")
 
 def plot_pcx_explanations(
     class_id, model_name, model, dataset, sample_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
-        ref_imgs_path, output_dir_pcx, output_dir_crp, display_class_names=None):
+        ref_imgs_path, output_dir_pcx, output_dir_crp, display_class_names=None, outlier_threshold=None):
 
     # Load the input image and label
     img, t = dataset[sample_id]
@@ -118,6 +117,7 @@ def plot_pcx_explanations(
         output_dir_pcx=output_dir_pcx,
         output_dir_crp=output_dir_crp,
         display_class_names=display_class_names,
+        outlier_threshold=outlier_threshold,
     )
 
     # Display and save the plot
@@ -142,7 +142,7 @@ def plot_pcx_explanations(
 def plot_one_image_pcx_explanation(
         model_name, model, img, orig_img, dataset, orig_dataset, class_id, n_concepts, n_refimgs, num_prototypes, prediction_num, layer_name,
         ref_imgs_path, output_dir_pcx, output_dir_crp, outside_logger=None,
-        display_class_names=None,
+        display_class_names=None, outlier_threshold=None,
 ):
     import logging
     logger = outside_logger if outside_logger is not None else logging.getLogger(__name__)
@@ -333,24 +333,17 @@ def plot_one_image_pcx_explanation(
     prototype_scores_all, prototype_boxes_all = model.predict_with_boxes(data_p)
     prototype_scores = prototype_scores_all[0]
     sample_predicted_boxes = prototype_boxes_all[0]
+    prototype_prediction_num = int(prototype_meta.get("prediction_num", 0))
     try:
-        prototype_prediction_index = _matching_detection_index(prototype_scores, class_id)
-        predicted_boxes_p = sample_predicted_boxes[prototype_prediction_index]
-        used_prototype_fallback = False
-    except ValueError:
-        predicted_boxes_p, used_prototype_fallback = _class_matched_box_or_fallback(
-            prototype_scores,
-            sample_predicted_boxes,
-            class_id=class_id,
-            fallback_class_id=prototype_meta["cls"],
-            fallback_box=prototype_meta["box"],
+        prototype_prediction_index = _matching_detection_index(
+            prototype_scores, class_id, prototype_prediction_num
         )
-        prototype_prediction_index = int(prototype_meta.get("box_idx", 0))
-        if not 0 <= prototype_prediction_index < len(sample_predicted_boxes):
-            raise ValueError(
-                f"Stored prototype box_idx={prototype_prediction_index} is unavailable for "
-                f"dataset sample {ds_idx}; regenerate the class-{class_id} PCX metadata."
-            )
+        predicted_boxes_p = sample_predicted_boxes[prototype_prediction_index]
+    except (ValueError, IndexError) as exc:
+        raise ExplanationUnavailableError(
+            f"Prototype detection is unavailable for class_id={class_id}, "
+            f"prediction_num={prototype_prediction_num}, metadata_row={closest_row}."
+        ) from exc
 
     # Getting top concepts/neurons for the given image in the given layer
     topk = torch.topk(channel_rels[0], n_concepts)
@@ -371,7 +364,7 @@ def plot_one_image_pcx_explanation(
     concept_key = "-".join(str(int(c)) for c in topk_ind)
     cache_dir = os.path.join(
         output_dir_pcx,
-        "cache_v2",
+        "cache_v3",
         layer_name,
         f"class_{class_id}_protos_{num_prototypes}",
         f"row_{closest_row}_ds_{ds_idx}_box_{prototype_prediction_index}_concepts_{concept_key}",
@@ -390,14 +383,14 @@ def plot_one_image_pcx_explanation(
     else:
         logger.debug("Cache not found, computing fresh")
         # compute them fresh
-        attribution.take_prediction = prototype_prediction_index
+        attribution.take_prediction = prototype_prediction_num
         cond_heatmap_p, _, _, _ = attribution(
             data_p.requires_grad_(),
             conditions,
             composite,
             exclude_parallel=True
         )
-        attribution.take_prediction = prototype_prediction_index
+        attribution.take_prediction = prototype_prediction_num
         attr_p = attribution(
             data_p.requires_grad_(),
             condition,
@@ -475,14 +468,6 @@ def plot_one_image_pcx_explanation(
     draw = ImageDraw.Draw(cropped_img)
     adjusted_box = (x_min - crop_x_min, y_min - crop_y_min, x_max - crop_x_min, y_max - crop_y_min)
     draw.rectangle(adjusted_box, outline="yellow", width=2)
-
-    if used_prototype_fallback:
-        logger.warning(
-            "Prototype sample %s has no live %s detection; using its stored, class-validated %s box.",
-            ds_idx,
-            pred_label,
-            pred_label,
-        )
 
     # predicted_classes = attr_p.prediction.argmax(dim=2)[0]
     # print(f"Predicted boxes: {predicted_boxes}")
@@ -604,12 +589,16 @@ def plot_one_image_pcx_explanation(
                     ax.set_xlabel("log-likelihood")
                     ax.set_xticks([]); ax.set_yticks([])
 
-                    outlier_text = "Ordinary"
+                    outlier_text = "Ordinary" if outlier_threshold is None else (
+                        "Outlier" if score_sample < outlier_threshold else "Ordinary")
+                    status_color = "#cc3300" if outlier_threshold is not None and score_sample < outlier_threshold else "green"
+                    if outlier_threshold is not None:
+                        ax.axvline(outlier_threshold, color="#cc3300", linestyle=":", label="cutoff")
                     bbox_props = dict(boxstyle="round,pad=0.3",
-                                      edgecolor="green",
-                                      facecolor="green", alpha=0.3, linewidth=4)
+                                      edgecolor=status_color,
+                                      facecolor=status_color, alpha=0.3, linewidth=4)
                     ax.text(0.5, -0.35, outlier_text, transform=ax.transAxes, ha="center", fontsize=10,
-                            fontweight='bold', color="green", bbox=bbox_props)
+                            fontweight='bold', color=status_color, bbox=bbox_props)
 
                 else:
                     ax.axis("off")
@@ -693,6 +682,15 @@ def plot_one_image_pcx_explanation(
 
             ax.set_xticks([]); ax.set_yticks([])
 
+    fig._pcx_metrics = {
+        "score": score_sample,
+        "threshold": outlier_threshold,
+        "outlier": None if outlier_threshold is None else score_sample < outlier_threshold,
+        "prototype": chosen_proto,
+        "prototype_metadata_row": closest_row,
+        "prototype_prediction_num": prototype_prediction_num,
+        "prototype_box_idx": prototype_prediction_index,
+    }
     plt.tight_layout()
 
     return fig

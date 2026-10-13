@@ -444,6 +444,7 @@ def parse_args():
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--layers", nargs="+", default=None)
     parser.add_argument(
         "--device",
         default=None,
@@ -534,6 +535,20 @@ def main():
             f"same class and IoU >= {args.iou_threshold:.2f}; CRP was not run."
         )
 
+    manifest = {
+        "checkpoint": str(checkpoint),
+        "dataset_root": str(dataset_root),
+        "dataset_length": len(dataset),
+        "crp_dataset_length": len(detected_indices),
+        "class_target_count": matched_detection_count,
+        "matched_indices": detected_indices,
+        "matched_classes": predicted_classes,
+        "selected_images": {str(i): dataset.image_files[i] for i in detected_indices},
+        "crp_layers": args.layers,
+        "diagnostics": diagnostics,
+    }
+    (output_dir / "crp_filter_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
     # Discard the inference-only instance and load a clean model so no hooks
     # from an earlier attribution attempt can be present.
     del scan_model
@@ -556,6 +571,7 @@ def main():
         output_dir=str(output_dir),
         device=device,
         use_canonizer=not args.no_canonizer,
+        record_layers=args.layers,
     )
 
 

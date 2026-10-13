@@ -35,6 +35,7 @@ def matching_detection_index(scores, class_id, occurrence=0):
     matching = (scores.argmax(dim=1) == int(class_id)).nonzero(as_tuple=True)[0]
     if matching.numel() == 0:
         raise ValueError(f"No predicted detections found for class_id={class_id}.")
+    matching = matching[scores[matching, int(class_id)].argsort(descending=True)]
     if occurrence < 0 or occurrence >= matching.numel():
         raise IndexError(
             f"Detection occurrence {occurrence} is out of range for class_id={class_id}; "

@@ -1,10 +1,12 @@
 import gc
+import hashlib
 import json
 import os
 import cv2
 import torch
 import torchvision.transforms as transforms
 import numpy as np
+from PIL import Image
 # Set non-interactive backend for matplotlib to avoid GUI issues in Flask
 import matplotlib
 
@@ -23,7 +25,7 @@ from src.plot_pcx_explanations_YOLO import plot_one_image_pcx_explanation
 from src.plot_pcx_explanations_YOLO import ExplanationUnavailableError
 from src.plotpcx_gpu import plot_pcx_explanations_pidnet
 from src.datasets.person_car_dataset import PersonCarDataset
-from src.datasets.detection_subset import DetectionSubset
+from src.datasets.detection_subset import DetectionSubset, DetectionReferenceDataset
 from src.datasets.flood_dataset import FloodDataset
 from src.datasets.flood_dataset_crp import FloodDataset as FloodCRPDataset
 from src.datasets.fire_dataset import FireDataset
@@ -112,6 +114,15 @@ class Explanator:
                 "ref_imgs_yolov6_brk_validated",
             ),
         )
+        self.person_vehicle_config = {}
+        config_path = os.environ.get("PERSON_VEHICLE_CONFIG")
+        if config_path:
+            with open(config_path, encoding="utf-8") as handle:
+                self.person_vehicle_config = json.load(handle)
+            for name in ("checkpoint", "data_root", "crp_dir", "pcx_dir", "ref_images_dir"):
+                variable = "PERSON_VEHICLE_" + name.upper()
+                value = os.path.join(self.project_root, self.person_vehicle_config[name])
+                setattr(self, "person_vehicle_" + name, os.environ.get(variable, value))
         self.fire_checkpoint = os.environ.get(
             "FIRE_CHECKPOINT",
             os.path.join(self.project_root, "models", "firemodel_pidnet_multi.pth"),
@@ -160,9 +171,6 @@ class Explanator:
         self.flood_min_coverage = float(os.environ.get("FLOOD_MIN_COVERAGE", "0.0"))
 
         self.kpi_mirror_roots = []
-        mirror_root = "/home/heydari/Jawher/FHHI-XAI"
-        if os.path.abspath(self.project_root) != os.path.abspath(mirror_root):
-            self.kpi_mirror_roots.append(mirror_root)
 
         # Lazy loading approach - don't load models until needed
         self._person_vehicle_model = None
@@ -734,6 +742,18 @@ class Explanator:
     def person_car_crp_dataset(self):
         """Exact manifest-backed dataset used to compute the PCX artifacts."""
         if self._person_car_crp_dataset is None:
+            if self.person_vehicle_config:
+                with open(self.person_vehicle_checkpoint, "rb") as handle:
+                    checkpoint_hash = hashlib.sha256(handle.read()).hexdigest()
+                if checkpoint_hash != self.person_vehicle_config["checkpoint_sha256"]:
+                    raise ValueError("YOLO checkpoint does not match the configured reference bank.")
+                target_path = os.path.join(self.project_root, self.person_vehicle_config["reference_targets"])
+                with open(target_path, encoding="utf-8") as handle:
+                    targets = json.load(handle)
+                self._person_car_crp_dataset = DetectionReferenceDataset(
+                    self.person_vehicle_data_root, targets, YOLOv6TrainPreprocess(640, 32, False)
+                )
+                return self._person_car_crp_dataset
             manifest_path = os.path.join(
                 self.person_vehicle_crp_dir,
                 "crp_filter_manifest.json",
@@ -792,6 +812,8 @@ class Explanator:
         return dataset
 
     def _find_person_car_sample_id(self, original_image_filename: str):
+        if self.person_vehicle_config:
+            return None
         basename = os.path.basename(original_image_filename)
         target_stem = os.path.splitext(basename)[0].lower()
         for crp_index, original_index in enumerate(
@@ -810,7 +832,7 @@ class Explanator:
         min_explanation_confidence = float(
             os.environ.get(
                 "PERSON_VEHICLE_MIN_EXPLANATION_CONFIDENCE",
-                "0.30",
+                str(self.person_vehicle_config.get("min_confidence", 0.30)),
             )
         )
         if not 0.0 <= min_explanation_confidence <= 1.0:
@@ -823,10 +845,9 @@ class Explanator:
         model_name = "yolov6s6"
         n_concepts = 3
         n_refimgs = 12
-        layer = 'module.backbone.ERBlock_3.0.rbr_dense.conv'
-        # More car components expose distinct appearance/context modes such as
-        # white, dark, isolated, small and occluded vehicles.
-        prototype_dict = {0: 4, 1: 5}
+        layer = self.person_vehicle_config.get("layer", "module.backbone.ERBlock_3.0.rbr_dense.conv")
+        class_config = self.person_vehicle_config.get("classes", {})
+        prototype_dict = {int(key): value["n_components"] for key, value in class_config.items()} or {0: 4, 1: 5}
 
         mode = "relevance"
         crp_output_dir = self.person_vehicle_crp_dir
@@ -849,7 +870,7 @@ class Explanator:
         log_cuda_memory(self.logger, "BEFORE IMAGE TRANSFORM")
 
         image_tensor = letterbox_transform(
-            image,
+            Image.fromarray(image),
             target_size=640,
             stride=32,
             half=False,
@@ -912,15 +933,10 @@ class Explanator:
             class_id = class_ids[prediction_num].item()
             predicted_class_name = display_class_names[class_id]
             confidence = confidences[prediction_num].item()
-            # Preserve the class-local rank in the detector's unfiltered
-            # output. Filtering a lower-confidence object must never shift the
-            # attribution onto another box of the same class.
-            class_local_prediction_num = int(
-                (class_ids_all[:original_detection_index + 1] == class_id)
-                .sum()
-                .item()
-                - 1
-            )
+            class_indices = (class_ids_all == class_id).nonzero(as_tuple=True)[0]
+            class_order = class_indices[scores[0][class_indices, class_id].argsort(descending=True)]
+            class_local_prediction_num = int((class_order == original_detection_index).nonzero(as_tuple=True)[0].item())
+            outlier_threshold = class_config.get(str(class_id), {}).get("outlier_threshold")
 
             self.logger.debug(f"Generating explanation for box {prediction_num} of {num_boxes}")
             self.logger.debug(
@@ -958,6 +974,7 @@ class Explanator:
                         output_dir_pcx=pcx_output_dir,
                         output_dir_crp=crp_output_dir,
                         display_class_names=display_class_names,
+                        outlier_threshold=outlier_threshold,
                     )
                 else:
                     explanation_fig = plot_one_image_pcx_explanation(
@@ -978,6 +995,7 @@ class Explanator:
                         output_dir_crp=crp_output_dir,
                         outside_logger=self.logger,
                         display_class_names=display_class_names,
+                        outlier_threshold=outlier_threshold,
                     )
             except ExplanationUnavailableError as exc:
                 self.logger.info(
@@ -991,6 +1009,7 @@ class Explanator:
                 _empty_cuda_cache()
                 continue
             figure_kpis = getattr(explanation_fig, "_kpi_metrics", {})
+            pcx_metrics = explanation_fig._pcx_metrics
             backward_time_s = float(figure_kpis.get("backward_time_s", 0.0))
             full_attribution_time_s = float(figure_kpis.get("full_attribution_time_s", 0.0))
             box_backward_times.append(backward_time_s)
@@ -1037,6 +1056,9 @@ class Explanator:
                 "confidences": confidence,
                 "explanation_image": explanation_file_name,
                 "explanation_image_bucket": FHHI_MINIO_BUCKET,
+                "outlier_score": pcx_metrics["score"],
+                "outlier_threshold": pcx_metrics["threshold"],
+                "outlier": pcx_metrics["outlier"],
             })
 
             log_cuda_memory(self.logger, f"AFTER BOX {prediction_num}")

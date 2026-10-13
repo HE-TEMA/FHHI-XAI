@@ -36,13 +36,10 @@ data/BRK/*
 data/D.MALIAN/*
 !data/D.MALIAN/flood_segmentation/
 !data/D.MALIAN/flood_segmentation/**
-!data/BRK/person_vehicle_detection/
-!data/BRK/person_vehicle_detection/**
-# The runtime and validated manifests use split="train" only.
+!data/person_vehicle_detection_20261007/
+!data/person_vehicle_detection_20261007/**
 data/D.MALIAN/flood_segmentation/RGB/val
 data/D.MALIAN/flood_segmentation/annotations/val
-data/BRK/person_vehicle_detection/images/val
-data/BRK/person_vehicle_detection/labels/val
 
 # Package only checkpoints selected by src/explanator.py.
 models/*
@@ -51,16 +48,11 @@ models/*
 
 # Package only the validated person/vehicle CRP, PCX and reference artifacts.
 output/*
-!output/crp/
-output/crp/*
-!output/crp/yolov6_validated_full_one_layer_20260727_145542/
-!output/crp/yolov6_validated_full_one_layer_20260727_145542/**
-!output/pcx/
-output/pcx/*
-!output/pcx/from_yolov6_validated_full_one_layer_20260727_145542/
-!output/pcx/from_yolov6_validated_full_one_layer_20260727_145542/**
-!output/ref_imgs_yolov6_brk_validated/
-!output/ref_imgs_yolov6_brk_validated/**
+!output/production/
+output/production/*
+!output/production/person_vehicle_stem_p5_20261012/
+!output/production/person_vehicle_stem_p5_20261012/**
+output/production/person_vehicle_stem_p5_20261012/pcx/pcx_plots/
 tests
 References
 plots
@@ -71,3 +63,7 @@ output_BRK
 
 *.log
 *.tmp
+*.zip
+prototype_selection_*/
+vehicle_examples_100/
+examples_download/

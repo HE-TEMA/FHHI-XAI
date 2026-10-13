@@ -62,16 +62,21 @@ def _get_class_max_reference(fv, concept_ids, layer_name, class_id, composite, n
         data, _ = fv.get_data_concurrently(d_indices, preprocessing=True)
         raw_data, _ = fv.get_data_concurrently(d_indices, preprocessing=False)
         targets = np.full(len(d_indices), int(class_id), dtype=int)
-        heatmaps = fv._attribution_on_reference(
-            data,
-            concept_id,
-            layer_name,
-            composite,
-            True,
-            neuron_indices,
-            batch_size=1,
-            targets=targets,
-        )
+        prediction_num = fv.attribution.take_prediction
+        fv.attribution.take_prediction = getattr(fv.dataset, "reference_prediction_num", 0)
+        try:
+            heatmaps = fv._attribution_on_reference(
+                data,
+                concept_id,
+                layer_name,
+                composite,
+                True,
+                neuron_indices,
+                batch_size=1,
+                targets=targets,
+            )
+        finally:
+            fv.attribution.take_prediction = prediction_num
         refs[concept_id] = vis_opaque_img_border_safe(
             raw_data.detach(), heatmaps.detach(), True
         )
@@ -79,10 +84,8 @@ def _get_class_max_reference(fv, concept_ids, layer_name, class_id, composite, n
 
 
 def get_ref_images(fv, topk_ind, layer_name, composite, class_id, n_ref=12, ref_imgs_save_path="output/ref_imgs/"):
-    # v2 caches are built from class-specific RelStats. Never reuse the old files,
-    # whose names contained a class ID but whose contents came from global maxima.
     ref_imgs_save_path = os.path.join(
-        ref_imgs_save_path, f"{layer_name}_class_{class_id}_class_filtered_v2.h5"
+        ref_imgs_save_path, f"{layer_name}_class_{class_id}_class_filtered_v3.h5"
     )
     os.makedirs(os.path.dirname(ref_imgs_save_path), exist_ok=True)
 
@@ -331,10 +334,10 @@ def get_detection_crop(
 # Prototype grid with concept references PNG
 # ------------------------------------------
 def prot_with_concepts(attributions, gmm, model, orig_dataset, device, class_id, layer_name, dataset, composite, fv,
-                       show_proto_concepts=True, skip_prototypes=None):
+                       show_proto_concepts=True, skip_prototypes=None, n_ref_per_concept=2):
     NUM_SAMPLES_PER_PROTO = 6
     K_CONCEPTS_PER_PROTO = 3
-    N_REF_PER_CONCEPT = 2
+    N_REF_PER_CONCEPT = int(n_ref_per_concept)
 
     A_np = attributions.detach().cpu().numpy()
     means = gmm.means_.astype(np.float32)
