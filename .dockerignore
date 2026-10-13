@@ -19,33 +19,35 @@ examples/*
 examples/output/*
 !examples/output/crp/
 examples/output/crp/*
-!examples/output/crp/CRP_BRK2/
-!examples/output/crp/CRP_BRK2/**
+!examples/output/crp/CRP_D.MALIAN-RELEVANCE/
+!examples/output/crp/CRP_D.MALIAN-RELEVANCE/**
 !examples/output/pcx/
 examples/output/pcx/*
-!examples/output/pcx/PCX-BRK2/
-!examples/output/pcx/PCX-BRK2/**
-!examples/new-ref-img-BRK-FLOOD10-ALL/
-!examples/new-ref-img-BRK-FLOOD10-ALL/**
+!examples/output/pcx/PCX-D.MALIAN-RELEVANCE/
+!examples/output/pcx/PCX-D.MALIAN-RELEVANCE/**
+!examples/new-ref-img-D.MALIAN-RELEVANCE/
+!examples/new-ref-img-D.MALIAN-RELEVANCE/**
 
 # Package only the two datasets needed for runtime prototype/reference lookup.
 data/*
 !data/BRK/
 data/BRK/*
-!data/BRK/flood_segmentation/
-!data/BRK/flood_segmentation/**
+!data/D.MALIAN/
+data/D.MALIAN/*
+!data/D.MALIAN/flood_segmentation/
+!data/D.MALIAN/flood_segmentation/**
 !data/BRK/person_vehicle_detection/
 !data/BRK/person_vehicle_detection/**
 # The runtime and validated manifests use split="train" only.
-data/BRK/flood_segmentation/RGB/val
-data/BRK/flood_segmentation/annotations/val
+data/D.MALIAN/flood_segmentation/RGB/val
+data/D.MALIAN/flood_segmentation/annotations/val
 data/BRK/person_vehicle_detection/images/val
 data/BRK/person_vehicle_detection/labels/val
 
 # Package only checkpoints selected by src/explanator.py.
 models/*
 !models/best_ckpt.pt
-!models/flood_model_brk2.pt
+!models/best.pt
 
 # Package only the validated person/vehicle CRP, PCX and reference artifacts.
 output/*

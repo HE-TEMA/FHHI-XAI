@@ -9,6 +9,7 @@ import torch
 from PIL import Image
 
 from src.datasets.base_dataset import BaseDataset
+from src.datasets.flood_dataset import FloodDataset as RuntimeFloodDataset
 
 
 def _natural_path_key(path):
@@ -31,6 +32,10 @@ class FloodDataset(BaseDataset):
     This version is tailored for CRP / run_analysis:
     __getitem__ returns exactly (image_tensor, label_tensor).
     """
+
+    # Match notebook preprocessing for external images received by the service.
+    _as_rgb_numpy = staticmethod(RuntimeFloodDataset._as_rgb_numpy)
+    transform = RuntimeFloodDataset.preprocess_image
 
     class_names = ["background", "flood"]
     # Valid label colors; everything else becomes ignore_label

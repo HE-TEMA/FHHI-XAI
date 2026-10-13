@@ -25,6 +25,7 @@ from src.plotpcx_gpu import plot_pcx_explanations_pidnet
 from src.datasets.person_car_dataset import PersonCarDataset
 from src.datasets.detection_subset import DetectionSubset
 from src.datasets.flood_dataset import FloodDataset
+from src.datasets.flood_dataset_crp import FloodDataset as FloodCRPDataset
 from src.datasets.fire_dataset import FireDataset
 from LCRP.models.pidnet import infer_checkpoint_geometry
 from src.entities import (
@@ -132,7 +133,7 @@ class Explanator:
             os.path.join(self.project_root, "output", "ref_imgs_fire"),
         )
         # Keep the service on exactly the same flood checkpoint, sample subset,
-        # CRP statistics and PCX banks as examples/pidnet_BRK.ipynb.  Every path
+        # CRP statistics and PCX banks as examples/pidnet_D.MALIAN.ipynb.  Every path
         # can be overridden when the assets are mounted elsewhere in Docker.
         self.flood_checkpoint = os.environ.get(
             "FLOOD_CHECKPOINT",
@@ -148,7 +149,7 @@ class Explanator:
         )
         self.flood_pcx_dir = os.environ.get(
             "FLOOD_PCX_DIR",
-            os.path.join(self.project_root, "examples", "output", "pcx", "PCX_D.MALIAN-RELEVANCE"),
+            os.path.join(self.project_root, "examples", "output", "pcx", "PCX-D.MALIAN-RELEVANCE"),
         )
         self.flood_ref_images_dir = os.environ.get(
             "FLOOD_REF_IMAGES_DIR",
@@ -156,7 +157,7 @@ class Explanator:
         )
         self.flood_layer = os.environ.get("FLOOD_PCX_LAYER", "layer2.1.conv2")
         self.flood_split = os.environ.get("FLOOD_DATA_SPLIT", "train")
-        self.flood_min_coverage = float(os.environ.get("FLOOD_MIN_COVERAGE", "0.01"))
+        self.flood_min_coverage = float(os.environ.get("FLOOD_MIN_COVERAGE", "0.0"))
 
         self.kpi_mirror_roots = []
         mirror_root = "/home/heydari/Jawher/FHHI-XAI"
@@ -507,7 +508,7 @@ class Explanator:
                     f"Flood dataset not found: {self.flood_data_root}. "
                     "Set FLOOD_DATA_ROOT to the mounted flood_segmentation directory."
                 )
-            self._flood_dataset = FloodDataset(
+            self._flood_dataset = FloodCRPDataset(
                 root_dir=self.flood_data_root,
                 split=self.flood_split,
                 min_flood_coverage=self.flood_min_coverage,
@@ -565,9 +566,9 @@ class Explanator:
         # Parameters
         class_id = 1  # Flood class ID
         n_concepts = 3
-        n_refimgs = 12
+        n_refimgs = 3
         model_name = "pidnet"
-        num_prototypes = 4
+        num_prototypes = 5
         output_dir_pcx = self.flood_pcx_dir
         output_dir_crp = self.flood_crp_dir
         ref_imgs_path = self.flood_ref_images_dir
