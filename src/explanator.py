@@ -136,27 +136,27 @@ class Explanator:
         # can be overridden when the assets are mounted elsewhere in Docker.
         self.flood_checkpoint = os.environ.get(
             "FLOOD_CHECKPOINT",
-            os.path.join(self.project_root, "models", "flood_model_brk2.pt"),
+            os.path.join(self.project_root, "models", "best.pt"),
         )
         self.flood_data_root = os.environ.get(
             "FLOOD_DATA_ROOT",
-            os.path.join(self.project_root, "data", "BRK", "flood_segmentation"),
+            os.path.join(self.project_root, "data", "D.MALIAN", "flood_segmentation"),
         )
         self.flood_crp_dir = os.environ.get(
             "FLOOD_CRP_DIR",
-            os.path.join(self.project_root, "examples", "output", "crp", "CRP_BRK2"),
+            os.path.join(self.project_root, "examples", "output", "crp", "CRP_D.MALIAN-RELEVANCE"),
         )
         self.flood_pcx_dir = os.environ.get(
             "FLOOD_PCX_DIR",
-            os.path.join(self.project_root, "examples", "output", "pcx", "PCX-BRK2"),
+            os.path.join(self.project_root, "examples", "output", "pcx", "PCX_D.MALIAN-RELEVANCE"),
         )
         self.flood_ref_images_dir = os.environ.get(
             "FLOOD_REF_IMAGES_DIR",
-            os.path.join(self.project_root, "examples", "new-ref-img-BRK-FLOOD10-ALL"),
+            os.path.join(self.project_root, "examples", "new-ref-img-D.MALIAN-RELEVANCE"),
         )
-        self.flood_layer = os.environ.get("FLOOD_PCX_LAYER", "layer5.0.conv1")
+        self.flood_layer = os.environ.get("FLOOD_PCX_LAYER", "layer2.1.conv2")
         self.flood_split = os.environ.get("FLOOD_DATA_SPLIT", "train")
-        self.flood_min_coverage = float(os.environ.get("FLOOD_MIN_COVERAGE", "0.10"))
+        self.flood_min_coverage = float(os.environ.get("FLOOD_MIN_COVERAGE", "0.01"))
 
         self.kpi_mirror_roots = []
         mirror_root = "/home/heydari/Jawher/FHHI-XAI"
@@ -567,7 +567,7 @@ class Explanator:
         n_concepts = 3
         n_refimgs = 12
         model_name = "pidnet"
-        num_prototypes = 2
+        num_prototypes = 4
         output_dir_pcx = self.flood_pcx_dir
         output_dir_crp = self.flood_crp_dir
         ref_imgs_path = self.flood_ref_images_dir

@@ -32,12 +32,10 @@ def process_image_task(entity_type, image_bucket, image_filename, task_id, bm_id
         logging.info(f"Task {task_id}: Downloading image from MinIO {image_bucket}/{image_filename}")
         img = minio_client.download_image(image_bucket, image_filename)
         if img is None:
-            job_status = {
-                'status': 'failed',
-                'error': f'Error downloading image from MinIO: {image_bucket}/{image_filename}'
-            }
-            update_job_status(redis_conn, task_id, job_status)
-            return
+            raise RuntimeError(
+                f'Error downloading image from MinIO: bucket={image_bucket!r}, '
+                f'object={image_filename!r}'
+            )
         
         # Update job status
         job_status = get_job_status(redis_conn, task_id)
@@ -119,3 +117,4 @@ def process_image_task(entity_type, image_bucket, image_filename, task_id, bm_id
             'error': str(e)
         }
         update_job_status(redis_conn, task_id, job_status)
+        raise
