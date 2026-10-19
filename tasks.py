@@ -48,11 +48,11 @@ def process_image_task(entity_type, image_bucket, image_filename, task_id, bm_id
         explanation_entity, explanation_images, exp_img_filenames = explanator.explain(entity_type, image_bucket, image_filename, img, bm_id=bm_id,uav_id=uav_id, flight_number=flight_number, alert_ref=alert_ref)
 
         if explanation_entity is None:
-            logging.info(f"Task {task_id}: No detections found; skipping PCX upload and Orion update")
+            logging.info(f"Task {task_id}: No publishable explanation; skipping MinIO upload and Orion update")
             job_status = {
                 'status': 'completed',
                 'progress': 100,
-                'message': 'No valid detections found; no explanation entity generated.',
+                'message': 'No publishable explanation generated (no valid detections or flood segment too small).',
                 'explanation_images': []
             }
             update_job_status(redis_conn, task_id, job_status)

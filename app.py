@@ -445,7 +445,7 @@ def post_data_old():
         explanation_entity, explanation_images, exp_img_filenames = explanator.explain(entity_type, entity, img)
 
         if explanation_entity is None:
-            app.logger.info("No detections found; skipping explanation upload and Orion update")
+            app.logger.info("No publishable explanation; skipping explanation upload and Orion update")
             return jsonify({
                 'message': 'No valid detections found; no explanation entity generated.',
                 'explanation_entity': None,

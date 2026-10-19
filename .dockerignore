@@ -30,29 +30,39 @@ examples/output/pcx/*
 
 # Package only the two datasets needed for runtime prototype/reference lookup.
 data/*
-!data/BRK/
-data/BRK/*
 !data/D.MALIAN/
 data/D.MALIAN/*
 !data/D.MALIAN/flood_segmentation/
 !data/D.MALIAN/flood_segmentation/**
-!data/person_vehicle_detection_20261007/
-!data/person_vehicle_detection_20261007/**
+!data/D.malian-yolo/
+data/D.malian-yolo/*
+!data/D.malian-yolo/person_vehicle_detection/
+!data/D.malian-yolo/person_vehicle_detection/**
+data/D.malian-yolo/person_vehicle_detection/_source_metadata/
+data/D.malian-yolo/person_vehicle_detection/migration_manifest.json
 data/D.MALIAN/flood_segmentation/RGB/val
 data/D.MALIAN/flood_segmentation/annotations/val
 
 # Package only checkpoints selected by src/explanator.py.
 models/*
-!models/best_ckpt.pt
+!models/yolo_dmalian.pt
 !models/best.pt
 
 # Package only the validated person/vehicle CRP, PCX and reference artifacts.
 output/*
-!output/production/
-output/production/*
-!output/production/person_vehicle_stem_p5_20261012/
-!output/production/person_vehicle_stem_p5_20261012/**
-output/production/person_vehicle_stem_p5_20261012/pcx/pcx_plots/
+!output/k4.json
+!output/reference_targets.json
+!output/crp/
+output/crp/*
+!output/crp/yolo_dmalian/
+!output/crp/yolo_dmalian/**
+!output/pcx/
+output/pcx/*
+!output/pcx/yolo_dmalian/
+!output/pcx/yolo_dmalian/**
+output/pcx/yolo_dmalian/pcx_plots/
+!output/ref_images_dmalian/
+!output/ref_images_dmalian/**
 tests
 References
 plots

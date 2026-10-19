@@ -33,9 +33,9 @@ from src.yolo_class_mapping import resolve_display_class_names
 
 
 MODEL_NAME = "yolov6s6"
-DEFAULT_CHECKPOINT = PROJECT_ROOT / "models" / "best_ckpt.pt"
+DEFAULT_CHECKPOINT = PROJECT_ROOT / "models" / "yolo_dmalian.pt"
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "data" / "BRK" / "person_vehicle_detection"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output" / "crp" / "yolo_person_car"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output" / "crp" / "yolo_dmalian"
 
 
 def select_device(requested):

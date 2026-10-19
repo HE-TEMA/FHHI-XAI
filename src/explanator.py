@@ -77,14 +77,14 @@ class Explanator:
         self.project_root = project_root
         self.person_vehicle_checkpoint = os.environ.get(
             "PERSON_VEHICLE_CHECKPOINT",
-            os.path.join(self.project_root, "models", "best_ckpt.pt"),
+            os.path.join(self.project_root, "models", "yolo_dmalian.pt"),
         )
         self.person_vehicle_data_root = os.environ.get(
             "PERSON_VEHICLE_DATA_ROOT",
             os.path.join(
                 self.project_root,
                 "data",
-                "BRK",
+                "D.malian-yolo",
                 "person_vehicle_detection",
             ),
         )
@@ -94,7 +94,7 @@ class Explanator:
                 self.project_root,
                 "output",
                 "crp",
-                "yolov6_validated_full_one_layer_20260727_145542",
+                "yolo_dmalian",
             ),
         )
         self.person_vehicle_pcx_dir = os.environ.get(
@@ -103,7 +103,7 @@ class Explanator:
                 self.project_root,
                 "output",
                 "pcx",
-                "from_yolov6_validated_full_one_layer_20260727_145542",
+                "yolo_dmalian",
             ),
         )
         self.person_vehicle_ref_images_dir = os.environ.get(
@@ -111,11 +111,14 @@ class Explanator:
             os.path.join(
                 self.project_root,
                 "output",
-                "ref_imgs_yolov6_brk_validated",
+                "ref_images_dmalian",
             ),
         )
         self.person_vehicle_config = {}
-        config_path = os.environ.get("PERSON_VEHICLE_CONFIG")
+        config_path = os.environ.get(
+            "PERSON_VEHICLE_CONFIG",
+            os.path.join(self.project_root, "output", "k4.json"),
+        )
         if config_path:
             with open(config_path, encoding="utf-8") as handle:
                 self.person_vehicle_config = json.load(handle)
@@ -651,6 +654,18 @@ class Explanator:
             # Release the input tensor as soon as the attribution run finishes
             del image_tensor
             _empty_cuda_cache()
+
+        if getattr(explanation_fig, "_flood_segment_too_small", False):
+            self.logger.info(
+                "Skipping flood explanation for %s: flood segment is too small "
+                "(%.4f%% of pixels; minimum 0.5%%). No upload or entity update.",
+                original_image_filename,
+                100.0 * explanation_fig._flood_segment_ratio,
+            )
+            plt.close(explanation_fig)
+            gc.collect()
+            _empty_cuda_cache()
+            return None, [], []
 
         used_n_refimgs = getattr(explanation_fig, "_n_refimgs_used", n_refimgs)
         used_n_concepts = getattr(explanation_fig, "_n_concepts_used", n_concepts)

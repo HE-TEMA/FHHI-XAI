@@ -952,6 +952,9 @@ def plot_pcx_explanations_pidnet(model_name, model, dataset, image_tensor,
 
     flood_segment_ratio = float(mask.float().mean().item()) if torch.is_tensor(mask) else 0.0
     flood_segment_too_small = flood_segment_ratio < 0.005  # <0.5% of pixels predicted as flood
+    # Let the service apply the same decision as the main heatmap panel.
+    fig._flood_segment_too_small = bool(flood_segment_too_small)
+    fig._flood_segment_ratio = float(flood_segment_ratio)
     relevance_too_small_thr = 1e-3  # 0.1%
 
     for r, row_axs in enumerate(axs):

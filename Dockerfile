@@ -27,7 +27,7 @@ FROM python:3.10-slim-bookworm
 # Override explanation settings at runtime with docker run -e when needed.
 ENV PORT=8080 \
     MPLCONFIGDIR=/tmp/matplotlib \
-    PERSON_VEHICLE_CONFIG=/app/output/production/person_vehicle_stem_p5_20261012/k4.json
+    PERSON_VEHICLE_CONFIG=/app/output/k4.json
 
 WORKDIR /app
 
@@ -53,6 +53,9 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Copy application code (done last to maximize caching)
 COPY . .
+
+# Fail the build if runtime YOLO assets were excluded from the build context.
+RUN python -c 'import json; from pathlib import Path; c = json.loads(Path("output/k4.json").read_text()); keys = ("checkpoint", "data_root", "crp_dir", "pcx_dir", "ref_images_dir", "reference_targets"); missing = [c[k] for k in keys if not Path(c[k]).exists()]; assert not missing, f"Missing YOLO runtime assets: {missing}"'
 
 # Expose port
 EXPOSE ${PORT}
