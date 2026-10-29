@@ -344,18 +344,31 @@ def prot_with_concepts(attributions, gmm, model, orig_dataset, device, class_id,
     K, C = means.shape
     skip_prototypes = set(skip_prototypes or [])
 
-    # nearest samples to each prototype mean
-    dists_prots = np.linalg.norm(A_np[:, None, :] - means[None, :, :], axis=2)  # [N, K]
-    ranked = np.argsort(dists_prots, axis=0)  # [N, K]
-    num_take = min(NUM_SAMPLES_PER_PROTO, ranked.shape[0])
+    labels = gmm.predict(A_np)
+    ranked = []
+    for pj in range(K):
+        members = np.flatnonzero(labels == pj)
+        if not len(members):
+            raise ValueError(f"Prototype {pj} has no assigned reference samples")
+        diff = A_np[members] - gmm.means_[pj]
+        precision = gmm.precisions_cholesky_
+        if gmm.covariance_type == 'full':
+            distance = np.sum((diff @ precision[pj]) ** 2, axis=1)
+        elif gmm.covariance_type == 'tied':
+            distance = np.sum((diff @ precision) ** 2, axis=1)
+        elif gmm.covariance_type == 'diag':
+            distance = np.sum((diff * precision[pj]) ** 2, axis=1)
+        else:
+            distance = np.sum(diff ** 2, axis=1) * precision[pj] ** 2
+        ranked.append(members[np.argsort(distance)])
 
     all_crops = [[] for _ in range(K)]
     for pj in range(K):
         taken = 0
         k = 0
-        max_try = min(ranked.shape[0], NUM_SAMPLES_PER_PROTO * 50)
+        max_try = min(len(ranked[pj]), NUM_SAMPLES_PER_PROTO * 50)
         while taken < NUM_SAMPLES_PER_PROTO and k < max_try:
-            idx = int(ranked[k, pj]);
+            idx = int(ranked[pj][k]);
             k += 1
             try:
                 crop = get_detection_crop(
@@ -375,7 +388,7 @@ def prot_with_concepts(attributions, gmm, model, orig_dataset, device, class_id,
 
         # pad if still short
         while len(all_crops[pj]) < NUM_SAMPLES_PER_PROTO:
-            idx0 = int(ranked[0, pj])
+            idx0 = int(ranked[pj][0])
             fallback_tensor, _ = dataset[idx0]
             fallback_uint8 = dataset.reverse_normalization(fallback_tensor).clamp(0, 255).byte()
             fallback_pil = F.to_pil_image(fallback_uint8)
@@ -415,7 +428,6 @@ def prot_with_concepts(attributions, gmm, model, orig_dataset, device, class_id,
         ref_imgs_save_path="../output_synthetic/ref_imgs_6/"
     )
 
-    labels = gmm.predict(A_np)
     counts = np.bincount(labels, minlength=K).astype(float)
     coverage_pct = (counts / max(1, A_np.shape[0])) * 100.0
 

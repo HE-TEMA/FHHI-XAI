@@ -53,6 +53,7 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Copy application code (done last to maximize caching)
 COPY . .
+COPY configs/person_vehicle_erblock2_k4.json output/k4.json
 
 # Fail the build if runtime YOLO assets were excluded from the build context.
 RUN python -c 'import json; from pathlib import Path; c = json.loads(Path("output/k4.json").read_text()); keys = ("checkpoint", "data_root", "crp_dir", "pcx_dir", "ref_images_dir", "reference_targets"); missing = [c[k] for k in keys if not Path(c[k]).exists()]; assert not missing, f"Missing YOLO runtime assets: {missing}"'

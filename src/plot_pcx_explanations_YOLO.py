@@ -285,6 +285,11 @@ def plot_one_image_pcx_explanation(
 
     post = gmm.predict_proba(x_star)  # (1, K) responsibilities
     chosen_proto = int(post.argmax(axis=1)[0])
+    if isinstance(outlier_threshold, (list, tuple, np.ndarray)):
+        thresholds = np.asarray(outlier_threshold, dtype=float)
+        if thresholds.shape != (num_prototypes,) or not np.isfinite(thresholds).all():
+            raise ValueError(f"Expected {num_prototypes} finite outlier thresholds in GMM component order")
+        outlier_threshold = float(thresholds[chosen_proto])
 
     score_sample = float(score_sample[0])
 
@@ -294,7 +299,7 @@ def plot_one_image_pcx_explanation(
     mu = gmm.means_[chosen_proto].astype(np.float32)  # (C,)
     L = gmm.precisions_cholesky_[chosen_proto].astype(np.float32)  # (C, C), upper chol of precision
     diff = A - mu[None, :]
-    y = diff @ L.T
+    y = diff @ L
     m2 = np.sum(y * y, axis=1)  # Mahalanobis^2
 
     # A representative must belong to the chosen component as well as the

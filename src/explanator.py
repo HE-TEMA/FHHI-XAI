@@ -951,7 +951,8 @@ class Explanator:
             class_indices = (class_ids_all == class_id).nonzero(as_tuple=True)[0]
             class_order = class_indices[scores[0][class_indices, class_id].argsort(descending=True)]
             class_local_prediction_num = int((class_order == original_detection_index).nonzero(as_tuple=True)[0].item())
-            outlier_threshold = class_config.get(str(class_id), {}).get("outlier_threshold")
+            settings = class_config.get(str(class_id), {})
+            outlier_threshold = settings.get("outlier_thresholds", settings.get("outlier_threshold"))
 
             self.logger.debug(f"Generating explanation for box {prediction_num} of {num_boxes}")
             self.logger.debug(

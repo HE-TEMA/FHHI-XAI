@@ -38,6 +38,9 @@ data/D.MALIAN/*
 data/D.malian-yolo/*
 !data/D.malian-yolo/person_vehicle_detection/
 !data/D.malian-yolo/person_vehicle_detection/**
+!data/person_vehicle_detection_20261007/
+!data/person_vehicle_detection_20261007/**
+data/person_vehicle_detection_20261007/_upload_metadata/
 data/D.malian-yolo/person_vehicle_detection/_source_metadata/
 data/D.malian-yolo/person_vehicle_detection/migration_manifest.json
 data/D.MALIAN/flood_segmentation/RGB/val
@@ -46,6 +49,7 @@ data/D.MALIAN/flood_segmentation/annotations/val
 # Package only checkpoints selected by src/explanator.py.
 models/*
 !models/yolo_dmalian.pt
+!models/best_ckpt.pt
 !models/best.pt
 
 # Package only the validated person/vehicle CRP, PCX and reference artifacts.
@@ -63,6 +67,11 @@ output/pcx/*
 output/pcx/yolo_dmalian/pcx_plots/
 !output/ref_images_dmalian/
 !output/ref_images_dmalian/**
+!output/production/
+output/production/*
+!output/production/person_vehicle_erblock2_k4_20261029/
+!output/production/person_vehicle_erblock2_k4_20261029/**
+output/production/person_vehicle_erblock2_k4_20261029/pcx/cache_v3/
 tests
 References
 plots
@@ -77,3 +86,7 @@ output_BRK
 prototype_selection_*/
 vehicle_examples_100/
 examples_download/
+new_examples/
+prototype_review/
+PIDNet/
+TEMA_trainin_evaluation_ws/
